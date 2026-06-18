@@ -86,6 +86,21 @@ check('dpc / 1234.56',
 check('dpc / 0',
     edit_format('ZZZ.ZZ9,99', 0,       true), '      0,00');
 
+// Slash insertion (date masks)
+check('9999/99/99 / 20150315',  edit_format('9999/99/99', 20150315),  '2015/03/15');
+check('9999/99/99 / 0',         edit_format('9999/99/99', 0),         '0000/00/00');
+check('99/99/9999 / 6152026',   edit_format('99/99/9999', 6152026),   '06/15/2026');
+
+// CR suffix: positive → 2 spaces, negative → 'CR'
+check('ZZZ,ZZ9.99CR / 1234.56', edit_format('ZZZ,ZZ9.99CR',  1234.56), '  1,234.56  ');
+check('ZZZ,ZZ9.99CR / -42',     edit_format('ZZZ,ZZ9.99CR', -42.00),   '     42.00CR');
+check('ZZZ,ZZ9.99CR / 0',       edit_format('ZZZ,ZZ9.99CR',  0),       '      0.00  ');
+
+// DB suffix: positive → 2 spaces, negative → 'DB'
+check('ZZZ,ZZ9.99DB / 1234.56', edit_format('ZZZ,ZZ9.99DB',  1234.56), '  1,234.56  ');
+check('ZZZ,ZZ9.99DB / -1234.56',edit_format('ZZZ,ZZ9.99DB', -1234.56), '  1,234.56DB');
+check('ZZZ,ZZ9.99DB / 0',       edit_format('ZZZ,ZZ9.99DB',  0),       '      0.00  ');
+
 // ===================================================================
 // 3. INSPECT FUNCTIONS
 // ===================================================================
@@ -284,6 +299,59 @@ check('search second (200)',     search_all($lookup, 'tableEntry', 'code', 200),
 check('search not found (low)',  search_all($lookup, 'tableEntry', 'code', 50),   null);
 check('search not found (mid)',  search_all($lookup, 'tableEntry', 'code', 250),  null);
 check('search not found (high)', search_all($lookup, 'tableEntry', 'code', 999),  null);
+
+// ===================================================================
+// 8. EDITED PICTURE FIELDS — property access via PHoPolLevel01
+//    Layout: slashDate (9999/99/99, 10 bytes)
+//            amtCr     (ZZZ,ZZ9.99CR, 12 bytes)
+//            amtDb     (ZZZ,ZZ9.99DB, 12 bytes)
+// ===================================================================
+echo "\n============================================================\n";
+echo "  8. Edited picture fields — slash insertion, CR/DB suffix\n";
+echo "============================================================\n";
+
+phopol_register_layout('WsEdited', 34, [
+    ['name'=>'slashDate', 'offset'=> 0, 'length'=>10, 'type'=>PHOPOL_TYPE_DISPLAY,
+     'digits'=>0, 'decimals'=>0, 'flags'=>0, 'editMask'=>'9999/99/99'],
+    ['name'=>'amtCr',     'offset'=>10, 'length'=>12, 'type'=>PHOPOL_TYPE_DISPLAY,
+     'digits'=>0, 'decimals'=>0, 'flags'=>0, 'editMask'=>'ZZZ,ZZ9.99CR'],
+    ['name'=>'amtDb',     'offset'=>22, 'length'=>12, 'type'=>PHOPOL_TYPE_DISPLAY,
+     'digits'=>0, 'decimals'=>0, 'flags'=>0, 'editMask'=>'ZZZ,ZZ9.99DB'],
+]);
+
+$ed = new PHoPolLevel01('WsEdited');
+$ed->allocate();
+
+// Slash insertion
+$ed->slashDate = 20150315;
+check('slashDate 20150315', $ed->slashDate, '2015/03/15');
+$ed->slashDate = 0;
+check('slashDate 0', $ed->slashDate, '0000/00/00');
+
+// CR suffix — positive value
+$ed->amtCr = 1234.56;
+check('amtCr positive 1234.56', $ed->amtCr, '  1,234.56  ');
+
+// CR suffix — negative value
+$ed->amtCr = -42.00;
+check('amtCr negative -42', $ed->amtCr, '     42.00CR');
+
+// DB suffix — positive value
+$ed->amtDb = 1234.56;
+check('amtDb positive 1234.56', $ed->amtDb, '  1,234.56  ');
+
+// DB suffix — negative value
+$ed->amtDb = -1234.56;
+check('amtDb negative -1234.56', $ed->amtDb, '  1,234.56DB');
+
+// initialize() resets edited fields to zero through mask
+$ed->slashDate = 20260618;
+$ed->amtCr     = -999.99;
+$ed->amtDb     = 1234.56;
+$ed->initialize();
+check('initialize slashDate → 0000/00/00', $ed->slashDate, '0000/00/00');
+check('initialize amtCr → zero positive',  $ed->amtCr,     '      0.00  ');
+check('initialize amtDb → zero positive',  $ed->amtDb,     '      0.00  ');
 
 // -------------------------------------------------------------------
 echo "\n------------------------------------------------------------\n";

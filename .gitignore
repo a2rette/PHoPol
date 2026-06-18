@@ -1,5 +1,5 @@
 # Compiled extension
-*.dll
+# *.dll
 *.so
 *.obj
 *.lib
