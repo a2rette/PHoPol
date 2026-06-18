@@ -1,0 +1,26 @@
+<?php
+
+//================================================================
+// wss_comma.phopol
+// WSS with DECIMAL POINT IS COMMA active.
+// Masks use ',' as decimal separator and '.' as thousands inserter.
+//================================================================
+
+namespace wss {
+
+    decimal_point is comma;
+
+    //------------------------------------------------------------
+    // European-format output line
+    //   clAmount  : ZZZ.ZZ9,99  → 10 bytes  e.g. "  1.234,56"
+    //   clCount   : ZZ.ZZ9      →  6 bytes  e.g. "  1.234" (no decimals)
+    //   clLabel   : string<10>  → 10 bytes
+    // Total: 26 bytes
+    //------------------------------------------------------------
+    level(01) $WsCommaLine {
+        edited<"ZZZ.ZZ9,99"> $clAmount;
+        edited<"ZZ.ZZ9">     $clCount;
+        string<10>            $clLabel;
+    }
+
+}

@@ -1,0 +1,71 @@
+<?php
+
+//================================================================
+// wss_perf.phopol — WSS for testPerf benchmarks
+//
+// WsBenchInput   — input transaction record   (37 bytes)
+// WsBenchOutput  — processed transaction record (59 bytes)
+// WsBenchTotals  — batch accumulator           (40 bytes)
+//
+// Field layout (shared knowledge with bench_pure_php.php):
+//
+//  WsBenchInput
+//   offset  0  string<8>             txId
+//   offset  8  uint<8>               txDate        (YYYYMMDD display)
+//   offset 16  string<4>             txCode
+//   offset 20  int<9>   binary       txQty         (4 bytes, machine-native)
+//   offset 24  sdecimal<9,2>  packed txUnitPrice   (6 bytes, BCD)
+//   offset 30  sdecimal<11,2> packed txAmount      (7 bytes, BCD)
+//
+//  WsBenchOutput
+//   offset  0  string<8>             outId
+//   offset  8  uint<8>               outDate
+//   offset 16  string<4>             outCode
+//   offset 20  int<9>   binary       outQty        (4 bytes)
+//   offset 24  sdecimal<9,2>  packed outUnitPrice  (6 bytes)
+//   offset 30  sdecimal<11,2> packed outAmount     (7 bytes)
+//   offset 37  sdecimal<11,2> packed outGross      (7 bytes)
+//   offset 44  sdecimal<9,2>  packed outTax        (6 bytes)
+//   offset 50  sdecimal<11,2> packed outNet        (7 bytes)
+//   offset 57  string<2>             outStatus
+//
+//  WsBenchTotals
+//   offset  0  int<9>   binary        totalRecs    (4 bytes)
+//   offset  4  sdecimal<15,2> packed  sumAmount    (9 bytes)
+//   offset 13  sdecimal<15,2> packed  sumGross     (9 bytes)
+//   offset 22  sdecimal<15,2> packed  sumTax       (9 bytes)
+//   offset 31  sdecimal<15,2> packed  sumNet       (9 bytes)
+//================================================================
+
+namespace wss {
+
+    level(01) $WsBenchInput {
+        string<8>              $txId;
+        uint<8>                $txDate;
+        string<4>              $txCode;
+        int<9>   binary        $txQty;
+        sdecimal<9,2>  packed  $txUnitPrice;
+        sdecimal<11,2> packed  $txAmount;
+    }
+
+    level(01) $WsBenchOutput {
+        string<8>              $outId;
+        uint<8>                $outDate;
+        string<4>              $outCode;
+        int<9>   binary        $outQty;
+        sdecimal<9,2>  packed  $outUnitPrice;
+        sdecimal<11,2> packed  $outAmount;
+        sdecimal<11,2> packed  $outGross;
+        sdecimal<9,2>  packed  $outTax;
+        sdecimal<11,2> packed  $outNet;
+        string<2>              $outStatus;
+    }
+
+    level(01) $WsBenchTotals {
+        int<9>   binary        $totalRecs;
+        sdecimal<15,2> packed  $sumAmount;
+        sdecimal<15,2> packed  $sumGross;
+        sdecimal<15,2> packed  $sumTax;
+        sdecimal<15,2> packed  $sumNet;
+    }
+}

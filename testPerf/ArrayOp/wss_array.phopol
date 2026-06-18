@@ -1,0 +1,53 @@
+<?php
+
+//================================================================
+// wss_array.phopol — WSS for ArrayOp benchmarks
+//
+// WsBenchTable — a single level holding a large OCCURS table.
+//   rowCount  : int<9> binary, set before accessing items
+//   item[1..N]: each entry uses php-native types for in-memory speed
+//               (no COBOL encode/decode — pure pointer dereference)
+//
+// Entry layout (56 bytes per row — all 8-byte php-native slots):
+//   php string  itemId       (zend_string *)
+//   php string  category     (zend_string *)
+//   php int     qty          (zend_long)
+//   php float   price        (double)
+//   php float   amount       (double)
+//   php float   discountRate (double)
+//   php float   netAmount    (double)
+//
+// Total buffer: 4 + N_max * 56  (N_max = 50 000 → ~2.7 MB)
+//================================================================
+
+namespace wss {
+
+    level(01) $WsBenchTable {
+        int<9> binary $rowCount;
+        level(05) $item occurs(0..50000, depending: $rowCount, index: $itemIdx) {
+            php string  $itemId;
+            php string  $category;
+            php int     $qty;
+            php float   $price;
+            php float   $amount;
+            php float   $discountRate;
+            php float   $netAmount;
+        }
+    }
+}
+
+//namespace wss {			formerly, before the introduction of php native types in levels
+//
+//    level(01) $WsBenchTable {
+//        int<9> binary $rowCount;
+//        level(05) $item occurs(0..50000, depending: $rowCount, index: $itemIdx) {
+//            string<8>     $itemId;
+//            string<4>     $category;
+//            int<9> binary $qty;
+//            float64       $price;
+//            float64       $amount;
+//            float64       $discountRate;
+//            float64       $netAmount;
+//        }
+//    }
+//}

@@ -1,0 +1,87 @@
+<?php
+
+//================================================================
+// wss_simple.cobphp
+// A small self-contained WSS for prototype testing.
+// Covers: elementary fields, binary, packed, redefines,
+//         occurs, condition names.
+//================================================================
+
+namespace wss {
+
+    //------------------------------------------------------------
+    // Simple identification record
+    //------------------------------------------------------------
+    level(01) $WsIdentification {
+        string<10>  $programName = 'TEST';
+        uint<2>     $version     = 1;
+        uint<2>     $revision    = 0;
+    }
+
+    //------------------------------------------------------------
+    // Date — flat and structured view (REDEFINES)
+    //------------------------------------------------------------
+    level(01) $WsDateNumeric {
+        uint<8> $date;
+    }
+
+    level(01) $WsDateParts redefines $WsDateNumeric {
+        uint<4> $yyyy;
+        uint<2> $mm;
+        uint<2> $dd;
+    }
+
+    //------------------------------------------------------------
+    // Status with condition names (88)
+    //------------------------------------------------------------
+    level(01) $WsStatus {
+        string<2> $statusCode;
+        when $statusCode == 'OK'        : bool $isOk;
+        when $statusCode == 'ER'        : bool $isError;
+        when $statusCode == 'FT'        : bool $isFatal;
+
+        int<4> binary $returnCode;
+        when $returnCode == 0       : bool $isSuccess;
+        when $returnCode in 1..4    : bool $isWarning;
+        when $returnCode in 8..99   : bool $isBadError;
+    }
+
+    //------------------------------------------------------------
+    // Binary and packed fields
+    //------------------------------------------------------------
+    level(01) $WsNumeric {
+        int<9>        binary $binCounter;
+        sdecimal<7,2> packed $packedAmount;
+        float64              $floatVal;
+    }
+
+    //------------------------------------------------------------
+    // Fixed table — month calendar
+    //------------------------------------------------------------
+    level(01) $WsCalendar {
+        level(05) $month occurs(12, index: $monthIdx) {
+            string<9>     $monthName;
+            uint<2>       $monthDays;
+            sdecimal<9,2> packed $monthTotal;
+        }
+    }
+
+    //------------------------------------------------------------
+    // Sorted table — for search_all() test
+    //------------------------------------------------------------
+    level(01) $WsCodeTable {
+        level(05) $codeEntry occurs(5,
+                                    asc: $code,
+                                    index: $codeIdx) {
+            string<5>  $code;
+            string<20> $description;
+        }
+    }
+
+    //------------------------------------------------------------
+    // Standalone fields (level 77)
+    //------------------------------------------------------------
+    standalone int<5>    packed $standaloneCtr  = ZERO;
+    standalone string<1>        $standaloneFlag = 'N';
+
+}

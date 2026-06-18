@@ -1,0 +1,495 @@
+<?php
+
+//================================================================
+// wss.phopol
+// WORKING-STORAGE SECTION — PHP/COBOL
+//
+// Syntax rules:
+//   namespace wss { }          wraps all WSS declarations
+//   level(n) $Name { }         group item (named)          $ on name
+//   level(n) { }               group item (anonymous)
+//   type $name;                leaf (elementary item)
+//   level(n) $name occurs(...) { }   table group
+//   type $name occurs(...);    table leaf
+//   when $f == v : bool $b;    condition name (88)
+//   alias $a..$b : $name;      renames (66)
+//   redefines($x) ...          redefines
+//   filler type;               anonymous padding
+//   standalone ...             level 77
+//   shared level(01) $Name {}  GLOBAL
+//   external level(01) $Name {}  EXTERNAL
+//
+// In PROCEDURE DIVISION:
+//   using wss;                 brings all fields into scope unqualified
+//   $fieldName                 unambiguous field — no qualification needed
+//   $LevelName->fieldName     ambiguous field — explicit qualification
+//   $table[$idx]->fieldName    table cell sub-field
+//================================================================
+
+namespace wss;
+
+//------------------------------------------------------------
+// IDENTIFICATION
+//------------------------------------------------------------
+
+level(01) $WsIdentification {
+	string<10>  $programName = 'SHOWCASE';    // PIC X(10)  VALUE 'SHOWCASE'
+	uint<2>     $version     = 1;             // PIC 9(2)   VALUE 1
+	uint<2>     $revision    = 0;             // PIC 9(2)   VALUE 0
+}
+
+
+//------------------------------------------------------------
+// ALPHANUMERIC  (PIC X)
+//------------------------------------------------------------
+
+level(01) $WsAlphaSamples {
+	string<1>   $char1;                       // PIC X
+	string<10>  $char10;                      // PIC X(10)
+	string<20>  $charSpaces  = SPACES;        // PIC X(20)  VALUE SPACES
+	string<5>   $charLiteral = 'HELLO';       // PIC X(5)   VALUE 'HELLO'
+}
+
+
+//------------------------------------------------------------
+// ALPHABETIC  (PIC A) — only A-Z and space
+//------------------------------------------------------------
+
+level(01) $WsAlphaOnly {
+	alpha<15>   $lettersOnly;                 // PIC A(15)
+}
+
+
+//------------------------------------------------------------
+// NUMERIC DISPLAY  (PIC 9 / S9 — zoned decimal, default)
+//------------------------------------------------------------
+
+level(01) $WsNumericDisplay {
+	uint<5>          $int5;                   // PIC 9(5)
+	int<5>           $intSigned;              // PIC S9(5)
+	int<5> signed_separate $intSignedSep;     // PIC S9(5) SIGN LEADING SEPARATE
+	decimal<5,2>     $amount;                 // PIC 9(5)V9(2)
+	sdecimal<5,2>    $amountSigned;           // PIC S9(5)V9(2)
+	uint<1>          $small;                  // PIC 9
+}
+
+
+//------------------------------------------------------------
+// EDITED PICTURES — display / report output only
+//------------------------------------------------------------
+
+level(01) $WsEditedSamples {
+	edited<"ZZZ,ZZ9.99">      $amtEdited;     // suppress leading zeros
+	edited<"$$$,$$$,$$9.99">  $amtDollar;     // floating $
+	edited<"***,**9.99">      $amtAsterisk;   // cheque protection
+	edited<"+ZZZ,ZZ9.99">     $amtSignedEd;   // explicit sign
+	edited<"ZZZ,ZZ9.99CR">    $amtCrDr;       // CR/DR suffix
+	edited<"99/99/9999">      $dateEdited;    // slash insertion
+	edited<"(999)B999-9999">  $phoneEdited;   // B = blank insertion
+}
+
+
+//------------------------------------------------------------
+// USAGE BINARY / COMP  (two's-complement integer)
+// Byte width inferred from digit count:
+//   int<1..4>  → 2 bytes
+//   int<5..9>  → 4 bytes
+//   int<10..18>→ 8 bytes
+//------------------------------------------------------------
+
+level(01) $WsBinaryItems {
+	int<4>  binary $binShort;                 // PIC S9(4)  BINARY  (2 bytes)
+	int<9>  binary $binInt;                   // PIC S9(9)  BINARY  (4 bytes)
+	int<18> binary $binLong;                  // PIC S9(18) BINARY  (8 bytes)
+	uint<9> binary $binUnsigned;              // PIC 9(9)   BINARY
+	int<9>  comp   $compInt;                  // PIC S9(9)  COMP  (synonym)
+}
+
+
+//------------------------------------------------------------
+// COMP-1 / COMP-2  (IEEE 754 floating-point)
+// No PIC clause — size is fixed by the type
+//------------------------------------------------------------
+
+level(01) $WsFloatItems {
+	float32  $floatSingle;                    // USAGE COMP-1  4 bytes ~7 sig. digits
+	float64  $floatDouble;                    // USAGE COMP-2  8 bytes ~15 sig. digits
+}
+
+
+//------------------------------------------------------------
+// COMP-3  (PACKED-DECIMAL / BCD)
+// Storage: ceil((digits+1)/2) bytes
+//------------------------------------------------------------
+
+level(01) $WsPackedItems {
+	int<5>        packed $packed5;            // PIC S9(5)       COMP-3  (3 bytes)
+	int<9>        packed $packed9;            // PIC S9(9)       COMP-3  (5 bytes)
+	sdecimal<7,2> packed $packedDec;          // PIC S9(7)V9(2)  COMP-3  (5 bytes)
+}
+
+
+//------------------------------------------------------------
+// COMP-5  (NATIVE BINARY — exact machine integer, C interop)
+//------------------------------------------------------------
+
+level(01) $WsComp5Items {
+	int<4>  native $c5Word;                   // PIC S9(4)  COMP-5  16-bit
+	int<9>  native $c5Dword;                  // PIC S9(9)  COMP-5  32-bit
+	int<18> native $c5Qword;                  // PIC S9(18) COMP-5  64-bit
+}
+
+
+//------------------------------------------------------------
+// POINTER / PROCEDURE-POINTER
+//------------------------------------------------------------
+
+level(01) $WsPointerItems {
+	pointer           $ptr;                   // USAGE POINTER
+	procedure_pointer $procPtr;               // USAGE PROCEDURE-POINTER
+}
+
+
+//------------------------------------------------------------
+// VALUE — figurative constants and literals
+//------------------------------------------------------------
+
+level(01) $WsInitialValues {
+	uint<5>       $zeroNum    = ZERO;         // VALUE ZERO
+	uint<5>       $zeroNum2   = ZEROS;        // VALUE ZEROS  (synonym)
+	string<10>    $blankAlpha = SPACES;       // VALUE SPACES
+	string<1>     $highByte   = HIGH_VALUES;  // VALUE HIGH-VALUES
+	string<1>     $lowByte    = LOW_VALUES;   // VALUE LOW-VALUES
+	string<1>     $quoteChar  = QUOTE;        // VALUE QUOTE
+	sdecimal<1,8> packed $pi  = 3.14159265;   // PIC S9V9(8) COMP-3
+}
+
+
+//------------------------------------------------------------
+// LEVEL 77 — standalone elementary (old style, avoid in new code)
+//------------------------------------------------------------
+
+standalone int<5>    packed $standaloneCtr  = ZERO;       // PIC S9(5) COMP-3
+standalone string<1>        $standaloneFlag = 'N';        // PIC X
+standalone uint<9>  binary  $standaloneMax  = 999999999;  // PIC 9(9) BINARY
+
+
+//------------------------------------------------------------
+// CONDITION NAMES  (level 88)
+// Virtual read-only bool properties bound to a parent field.
+//   when $field == val          single value
+//   when $field == v1 | v2      multiple values
+//   when $field in low..high    range (THRU)
+// SET 88-name TO TRUE  →  $WsLevel->boolProp = true
+//   runtime reverse-maps to the parent field's first listed value
+//------------------------------------------------------------
+
+level(01) $WsStatusCode {
+	string<2> $statusCode;
+	when $statusCode == 'OK'        : bool $isOk;
+	when $statusCode == 'WN'        : bool $isWarn;
+	when $statusCode == 'ER' | 'EX' : bool $isError;     // multi-value
+	when $statusCode == 'FT'        : bool $isFatal;
+}
+
+level(01) $WsReturnCode {
+	int<4> binary $returnCode;
+	when $returnCode == 0        : bool $isSuccess;
+	when $returnCode in 1..4     : bool $isWarning;       // THRU range
+	when $returnCode in 8..99    : bool $isError;
+	when $returnCode in 100..999 : bool $isAbend;
+}
+
+level(01) $WsSwitch {
+	string<1> $switch;
+	when $switch == 'Y' | 'y' | '1' : bool $isOn;
+	when $switch == 'N' | 'n' | '0' : bool $isOff;
+}
+
+
+//------------------------------------------------------------
+// REDEFINES — multiple structural views over the same storage
+// Redefining level must not exceed size of redefined level.
+//
+// Form A: level(01) $B redefines $A { }  — full level overlay
+// Form B: redefines($field) ...          — inline field overlay
+//------------------------------------------------------------
+
+// Form A — date as flat number vs split fields
+level(01) $WsDateNumeric {
+	uint<8> $date;                            // PIC 9(8)  YYYYMMDD as integer
+}
+
+level(01) $WsDateParts redefines $WsDateNumeric {
+	uint<4> $yyyy;                            // PIC 9(4)
+	uint<2> $mm;                              // PIC 9(2)
+	uint<2> $dd;                              // PIC 9(2)
+}
+
+// Backup level — introduces $date collision with $WsDateNumeric
+// → must qualify as $WsDateNumeric->date or $WsDatePartsBackup->date
+level(01) $WsDatePartsBackup {
+	uint<4> $yyyy;                            // PIC 9(4)
+	uint<2> $mm;                              // PIC 9(2)
+	uint<2> $dd;                              // PIC 9(2)
+	uint<8> $date;                            // PIC 9(8)  — collision with $WsDateNumeric
+}
+
+// Form B — same 4 bytes as string OR byte array
+level(01) $WsWordAlpha {
+	string<4> $word;                          // PIC X(4)
+
+	redefines($word)
+	string<1> $byte occurs(4, index: $byteIdx); // PIC X OCCURS 4 TIMES
+}
+
+// Form B — raw bytes vs packed decimal overlay
+level(01) $WsRawBytes {
+	string<5>            $rawBytes;           // PIC X(5)
+
+	redefines($rawBytes)
+	sdecimal<9,0> packed $packedView;         // PIC S9(9) COMP-3
+}
+
+
+//------------------------------------------------------------
+// RENAMES  (level 66) — alias spanning a contiguous field range
+// No new storage allocated.
+// Cannot span items with occurs(), or alias another alias/88.
+//------------------------------------------------------------
+
+level(01) $WsLevelFull {
+	string<2>     $recHeader;                 // PIC X(2)
+	string<8>     $recKey;                    // PIC X(8)
+	sdecimal<9,2> packed $recAmount;          // PIC S9(9)V99 COMP-3
+	uint<8>       $recDate;                   // PIC 9(8)
+	string<10>    $recTrailer;                // PIC X(10)
+
+	alias $recKey..$recAmount    : $recKeyAndAmount;    // 66 RENAMES ... THRU
+	alias $recAmount..$recTrailer : $recEverythingElse; // 66 RENAMES ... THRU
+}
+
+
+//------------------------------------------------------------
+// OCCURS — fixed table
+// Group occurs: braces.   Leaf occurs: no braces.
+//------------------------------------------------------------
+
+level(01) $WsFixedTable {
+	level(05) $monthEntry occurs(12, index: $monthIdx) {
+		string<9>     $monthName;             // PIC X(9)
+		uint<2>       $monthDays;             // PIC 9(2)
+		sdecimal<9,2> packed $monthTotal;     // PIC S9(9)V99 COMP-3
+	}
+}
+
+// Leaf-level occurs
+level(01) $WsSimpleArrays {
+	string<1> $flags  occurs(10, index: $flagIdx);  // PIC X    OCCURS 10 TIMES
+	uint<3>   $counts occurs(10, index: $cntIdx);   // PIC 9(3) OCCURS 10 TIMES
+}
+
+
+//------------------------------------------------------------
+// OCCURS DEPENDING ON (ODO) — variable-length table
+// Pre-allocates for max (100); only $itemCount rows are live.
+//------------------------------------------------------------
+
+level(01) $WsVariableTable {
+	int<4> binary $itemCount = ZERO;          // PIC S9(4) COMP  — ODO object
+
+	level(05) $item occurs(1..100,            // OCCURS 1 TO 100 TIMES
+						   depending: $itemCount,  // DEPENDING ON
+						   index: $itemIdx) { // INDEXED BY
+		string<5>     $itemCode;              // PIC X(5)
+		sdecimal<7,2> packed $itemValue;      // PIC S9(7)V99 COMP-3
+	}
+}
+
+
+//------------------------------------------------------------
+// OCCURS with ASCENDING KEY — enables search_all()
+//------------------------------------------------------------
+
+level(01) $WsSortedTable {
+	level(05) $sortedEntry occurs(500,
+								  asc: $sortKey,   // ASCENDING KEY IS
+								  index: $sortIdx) {
+		string<10> $sortKey;
+		string<40> $sortData;
+	}
+}
+
+// Multi-key sort
+level(01) $WsMultiKeySorted {
+	level(05) $entry occurs(200,
+							asc: $lastName,        // ASCENDING KEY IS
+							asc: $firstName,       // ASCENDING KEY IS
+							index: $entryIdx) {
+		string<15>    $lastName;
+		string<15>    $firstName;
+		sdecimal<9,2> packed $balance;
+	}
+}
+
+
+//------------------------------------------------------------
+// MULTI-DIMENSIONAL TABLE  (nested occurs)
+//------------------------------------------------------------
+
+level(01) $WsMatrix {
+	level(05) $row occurs(10, index: $rowIdx) {    // outer OCCURS 10 TIMES
+		level(10) $cell occurs(10, index: $colIdx) { // inner OCCURS 10 TIMES
+			sdecimal<5,2> packed $cellVal;        // PIC S9(5)V99 COMP-3
+		}
+	}
+}
+
+
+//------------------------------------------------------------
+// OCCURS with REDEFINES — table overlaying a flat field
+//------------------------------------------------------------
+
+level(01) $WsTableRaw {
+	string<40> $rawBlock;                     // PIC X(40)  flat view
+
+	redefines($rawBlock)                      // same 40 bytes: 8 × 5 = 40
+	level(05) $entries occurs(8, index: $entryIdx) {
+		string<3> $code;                      // PIC X(3)
+		uint<2>   $count;                     // PIC 9(2)
+	}
+}
+
+
+//------------------------------------------------------------
+// OCCURS with default-initialised leaves
+// (PHP/COBOL extension — COBOL forbids VALUE under OCCURS)
+//------------------------------------------------------------
+
+level(01) $WsInitialisedTable {
+	level(05) $entry occurs(50, index: $entryIdx) {
+		string<1>     $flag   = 'N';          // every cell initialised to 'N'
+		sdecimal<7,2> packed $amount = ZERO;  // every cell initialised to 0
+	}
+}
+
+
+//------------------------------------------------------------
+// JUSTIFIED RIGHT
+//------------------------------------------------------------
+
+level(01) $WsJustifiedItems {
+	string<20> justify(right) $rightName;     // PIC X(20) JUSTIFIED RIGHT
+	string<20> justify(left)  $leftName;      // PIC X(20) default, explicit
+}
+
+
+//------------------------------------------------------------
+// BLANK WHEN ZERO  (edited fields only)
+//------------------------------------------------------------
+
+level(01) $WsBlankZeroItems {
+	edited<"ZZ,ZZ9.99"> blank_zero $bzAmount; // PIC ZZ,ZZ9.99 BLANK WHEN ZERO
+}
+
+
+//------------------------------------------------------------
+// SYNCHRONIZED
+//   sync          SYNCHRONIZED LEFT  (default)
+//   sync(left)    SYNCHRONIZED LEFT  (explicit)
+//   sync(right)   SYNCHRONIZED RIGHT
+//------------------------------------------------------------
+
+level(01) $WsSyncedItems {
+	int<4>  binary sync        $syncShort;    // PIC S9(4)  BINARY SYNC
+	int<9>  binary sync        $syncInt;      // PIC S9(9)  BINARY SYNC
+	int<18> binary sync(left)  $syncLong;     // explicit left
+	int<9>  binary sync(right) $syncRight;    // SYNCHRONIZED RIGHT
+}
+
+
+//------------------------------------------------------------
+// FILLER — anonymous padding, cannot be referenced
+//------------------------------------------------------------
+
+level(01) $WsPaddedLevel {
+	string<2>     $prType;                    // PIC X(2)
+	filler string<3>;                         // PIC X(3)    3 bytes padding
+	sdecimal<9,2> packed $prAmount;           // PIC S9(9)V99 COMP-3
+	filler string<10> = SPACES;              // PIC X(10)   VALUE SPACES
+}
+
+
+//------------------------------------------------------------
+// ARITHMETIC WORK FIELDS
+// Used by procedure.phopol calculateTotals() and others
+//------------------------------------------------------------
+
+level(01) $WsArithmetic {
+	sdecimal<9,2> packed $total;              // PIC S9(9)V99 COMP-3
+	sdecimal<9,2> packed $amount;             // PIC S9(9)V99 COMP-3
+	sdecimal<9,2> packed $result;             // PIC S9(9)V99 COMP-3
+	sdecimal<9,2> packed $average;            // PIC S9(9)V99 COMP-3
+	sdecimal<9,2> packed $price;              // PIC S9(9)V99 COMP-3
+	sdecimal<9,2> packed $piApprox;           // PIC S9(9)V99 COMP-3
+	int<9>  binary $qty;                      // PIC S9(9)   BINARY
+	int<9>  binary $count;                    // PIC S9(9)   BINARY
+	int<9>  binary $quotient;                 // PIC S9(9)   BINARY
+	int<9>  binary $remainder;                // PIC S9(9)   BINARY
+	sdecimal<5,2> packed $a;                  // operand A
+	sdecimal<5,2> packed $b;                  // operand B
+	sdecimal<5,2> packed $c;                  // operand C
+	sdecimal<5,2> packed $d;                  // operand D
+}
+
+
+//------------------------------------------------------------
+// STRING / UNSTRING / INSPECT work fields
+//------------------------------------------------------------
+
+level(01) $WsStringWork {
+	string<20>  $dateFormatted;               // PIC X(20)  formatted date
+	string<30>  $fullName;                    // PIC X(30)  first + last
+	string<40>  $firstName;                   // PIC X(40)
+	string<40>  $lastName;                    // PIC X(40)
+	string<100> $output;                      // PIC X(100) general output buffer
+	string<100> $input;                       // PIC X(100) general input buffer
+	string<40>  $resultData;                  // PIC X(40)  search result
+	int<4> binary $ptr    = 1;                // PIC S9(4) BINARY  STRING pointer
+	int<4> binary $tally  = ZERO;             // PIC S9(4) BINARY  INSPECT tally
+}
+
+
+//------------------------------------------------------------
+// GLOBAL — visible to all nested (contained) sub-programs
+//------------------------------------------------------------
+
+shared level(01) $WsGlobalCounter {
+	sdecimal<9,0> packed $ctr = ZERO;         // PIC S9(9) COMP-3 GLOBAL
+}
+
+shared standalone sdecimal<9,0> packed $sharedCtr = ZERO;
+
+
+//------------------------------------------------------------
+// EXTERNAL — shared across separately compiled programs
+// Cannot be combined with shared.
+//------------------------------------------------------------
+
+external level(01) $WsSharedStatus {
+	string<2> $status = SPACES;               // PIC X(2) EXTERNAL
+}
+
+external standalone string<2> $sharedStatus = SPACES;
+
+
+//------------------------------------------------------------
+// COMBINING MODIFIERS
+// Order: storage → alignment → display
+//------------------------------------------------------------
+
+level(01) $WsCombined {
+	sdecimal<9,2> packed sync                    $packedSynced;
+	int<9>        binary native sync             $nativeSynced;
+	edited<"ZZZ,ZZ9.99"> blank_zero justify(right) $fancyAmount;
+}

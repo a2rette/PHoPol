@@ -1,0 +1,231 @@
+================================================================
+PHoPol benchmark results
+Platform : Windows 11, PHP 8.x, php_phopol.dll (C extension)
+Date     : 2026-06-17
+================================================================
+
+
+================================================================
+1. FileRW — fixed-width binary file read/write
+   testPerf/FileRW/
+   Records : 50 000  x  37 bytes in  /  59 bytes out
+   Types   : string, uint display, int binary, sdecimal packed
+   Task    : read input, compute gross/tax/net, write output
+================================================================
+
+--- PHoPol C extension ---
+
+  loadSection()    :   1.01 ms   (PHP parser + C layout registration)
+  Records          :  50 000
+  Elapsed          : 414.2 ms
+  Throughput       : 120 712 rec/s
+  Peak PHP memory  :   2.00 MB   (C-side buffers not counted)
+
+  Checksum — sumAmount : 1,334,942,250.00
+             sumGross  : 1,334,942,250.00
+             sumTax    :   266,988,450.00
+             sumNet    : 1,067,953,800.00
+
+--- Pure PHP (manual pack/unpack + BCD encode/decode) ---
+
+  Elapsed          : 2 498.1 ms
+  Throughput       :  20 015 rec/s
+  Peak PHP memory  :   2.00 MB
+
+  Checksum — sumAmount : 1,334,942,250.00  (identical)
+             sumGross  : 1,334,942,250.00
+             sumTax    :   266,988,450.00
+             sumNet    : 1,067,953,800.00
+
+  Output files : byte-identical between the two implementations.
+
+--- Ratio ---
+
+  Speed  : PHoPol x6.0 faster than pure PHP
+  Memory : equal (packed decimal lives in C-side buffer,
+           no impact on PHP heap for either implementation)
+
+--- Notes ---
+
+  The dominant cost on the pure PHP side is BCD encode/decode
+  (packed decimal, COMP-3): each field requires a byte-by-byte
+  nibble loop in PHP.  The C extension does this in a tight C loop
+  with no PHP overhead per nibble.
+
+  loadSection() (~1 ms) is the PHP-parser cost.  When the parser
+  is rewritten in C this number is the baseline to beat.
+
+
+================================================================
+2. ArrayOp — in-memory OCCURS table populate + compute
+   testPerf/ArrayOp/
+   Types   : string, int binary, float64  (no packed decimal)
+   Layout  : 48 bytes/row  (itemId, category, qty, price,
+                             amount, discountRate, netAmount)
+   Task    : Phase 1 — populate all rows (write 4 fields each)
+             Phase 2 — compute amount/discount/net, aggregate
+================================================================
+
+--- N = 10 000 rows ---
+
+  PHoPol C extension  (cache_slot + fields_ht + unset($row) optimisations)
+    loadSection()      :  1.24 ms
+    Phase 1 populate   :  9.15 ms
+    Phase 2 compute    :  7.52 ms
+    Total (1+2)        : 16.67 ms
+    Peak PHP memory    :  6.00 MB
+    C-side buffer      :  0.46 MB  (4 + 10000 x 48 bytes)
+
+  Pure PHP (array of associative arrays)
+    Phase 1 populate   :  7.88 ms
+    Phase 2 compute    :  5.93 ms
+    Total (1+2)        : 13.81 ms
+    Peak PHP memory    :  6.00 MB
+
+  Checksum — sumAmount  :   150,225,000.00  (identical)
+             sumNet     :   135,934,750.00
+             countHigh  :         6 850
+             maxPrice   :        252.50
+
+  Speed ratio  : pure PHP x1.1 faster than PHoPol
+  Memory ratio : equal at this scale
+
+--- N = 50 000 rows ---
+
+  PHoPol C extension  (cache_slot + fields_ht + unset($row) optimisations)
+    loadSection()      :  1.20 ms
+    Phase 1 populate   : 45.91 ms
+    Phase 2 compute    : 37.60 ms
+    Total (1+2)        : 83.51 ms
+    Peak PHP memory    :  6.00 MB   (flat, does not grow with N)
+    C-side buffer      :  2.29 MB  (4 + 50000 x 48 bytes)
+
+  Pure PHP (array of associative arrays)
+    Phase 1 populate   : 34.23 ms
+    Phase 2 compute    : 29.81 ms
+    Total (1+2)        : 64.04 ms
+    Peak PHP memory    : 22.00 MB   (grows with N)
+
+  Checksum — sumAmount  :   751,125,000.00  (identical)
+             sumNet     :   679,673,750.00
+             countHigh  :        34 250
+             maxPrice   :        252.50
+
+  Speed ratio  : pure PHP x1.2 faster than PHoPol
+  Memory ratio : PHoPol total ~8.3 MB vs pure PHP 22 MB  (x2.6 leaner)
+
+--- Notes ---
+
+  Three complementary optimisations active:
+  — cache_slot (Zend opcode-site cache): stores phopol_field_t * directly
+    per PHP opcode site; from the second loop iteration onward, read and
+    write property handlers skip all lookup entirely.
+  — fields_ht (per-layout persistent HashTable): phopol_find_field() is
+    now an O(1) zend_hash_str_find_ptr call instead of a linear scan.
+    Covers every call site: cache_slot slow path, DEPENDING ON, condition
+    src_field evaluation, MOVE/ADD CORRESPONDING, SEARCH ALL, has_property.
+  — unset($row) at end of each loop body: drops $row's reference to the
+    cell sub-view, leaving the proxy's cached_cell as the sole owner
+    (refcount=1). On the next iteration read_dimension finds refcount==1
+    and reuses the cell object in-place (no object_init_ex). Gain: −9%
+    Phase 1, −5% Phase 2. Cannot be automated in the C layer: the VM
+    always holds the old $row alive while evaluating the RHS, so
+    refcount is always 2 at the moment read_dimension fires. The
+    proxy-as-cursor alternative (returning the proxy from [$i]) was
+    considered but introduces aliasing: $Table->item[$j] would silently
+    reposition any stored $row that is the same proxy object.
+
+  Remaining gap (x1.2 Phase 2) comes from:
+  — phopol_decode_field / phopol_encode_field type dispatch for each
+    read/write vs PHP's direct array pointer dereference
+  — one object_init_ex per loop (first iteration only, subsequent
+    iterations reuse via cached_cell fast path)
+
+  Memory: PHoPol's PHP-side footprint stays constant regardless of N.
+  All row data lives in the flat C-side buffer.  PHP arrays grow
+  proportionally: at N=50 000, associative-array overhead is
+  ~440 bytes/row (7 keys x zval + hash-map buckets), totalling
+  ~22 MB vs ~2.3 MB for the C buffer.
+
+
+================================================================
+Overall picture
+================================================================
+
+  Benchmark          PHoPol vs pure PHP   PHoPol memory advantage
+  ---------------------------------------------------------------
+  FileRW / packed    x6.0 faster          equal (both 2 MB)
+  ArrayOp N=10k      x1.1 slower          equal at this scale
+  ArrayOp N=50k      x1.2 slower          x2.6 leaner (8 MB vs 22 MB)
+
+  PHoPol is the clear winner for encoded I/O (packed decimal,
+  fixed-width records) and memory density at large N.
+
+  For purely in-memory OCCURS traversal with simple numeric types
+  (float64, binary int), plain PHP arrays are currently faster per
+  field access.  This is expected: the property-handler overhead
+  exists to support the rich encoding pipeline (BCD, edited masks,
+  condition names, REDEFINES).  If in-memory speed matters for a
+  workload with no packed decimal, the cost of that overhead is
+  the trade-off.
+
+  Future comparisons to track
+  ---------------------------
+  - loadSection() after C-coded parser  (baseline: ~1.4 ms)
+  - ArrayOp after property-handler optimisation
+
+
+================================================================
+3. Cell-reuse optimisation — investigation
+   ext/phopol_level.c : phopol_occurs_group_read_dimension
+================================================================
+
+Motivation: each $Table->item[$i] call creates a transient
+PHoPolLevel01 "cell sub-view" object (object_init_ex + efree per
+iteration).  The idea was to cache the last cell in the proxy and
+reuse it when the proxy is the sole owner (GC_REFCOUNT == 1).
+
+Implementation (shipped in current DLL):
+  - Added zval cached_cell to phopol_occurs_group_object.
+  - Fast path (refcount == 1): update data_offset in-place,
+    ZVAL_COPY into rv — no allocation.
+  - Slow path (refcount > 1): object_init_ex as before, cache
+    the new cell, release the old one safely.
+  - phopol_occurs_group_get_gc() exposes both zvals to the
+    Zend cycle-collector (parent_zval + cached_cell consecutive).
+
+Why the fast path never fires with the $row pattern:
+  $row = $Table->item[$i]     — read_dimension is called while
+  the cached cell from the previous iteration is still held by
+  $row (PHP evaluates RHS before releasing the old LHS).
+  GC_REFCOUNT is 2, so the guard refcount==1 is never true.
+
+Why direct-chain does not help either:
+  $Table->item[$i]->field replaces one proxy lookup + one slow
+  read_dimension per row with 4-6 proxy lookups + 4-6 fast
+  read_dimensions.  Each proxy read (FETCH_OBJ_R) copies the
+  proxy zval (ZVAL_COPY), adding 4-6 ADDREF/DELREF pairs per
+  row.  That overhead exceeds the one object_init_ex saved.
+  Result: direct-chain Phase 2 = 62 ms vs $row = 47 ms (worse).
+
+Bottlenecks identified and resolved (see section 2 for final numbers):
+
+  1. phopol_find_field — linear O(K) scan per read/write was the
+     dominant cost.  Fixed by cache_slot (skip lookup from iteration 2)
+     and fields_ht (O(1) hash lookup everywhere else).
+     Result: Phase 2 −27% (N=10k), −11% (N=50k).
+
+  2. object_init_ex per row — measured at 5–9% of elapsed time once
+     phopol_find_field was fixed.  Fixed by adding unset($row) at the
+     end of each loop body: drops $row's reference so the proxy's
+     cached_cell is the sole owner (refcount=1) when the next iteration
+     calls read_dimension, enabling the in-place reuse fast path.
+     Cannot be automated in C: the VM holds the old $row alive while
+     evaluating the RHS, so refcount is always 2 at that moment.
+     Result: Phase 1 −9%, Phase 2 −5%.
+
+  Remaining gap (x1.2 Phase 2, N=50k) is codec overhead: every
+  read/write goes through phopol_decode_field/phopol_encode_field
+  (type dispatch + byte manipulation) whereas PHP array access is a
+  direct pointer dereference.
+================================================================

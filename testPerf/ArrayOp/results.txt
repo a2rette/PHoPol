@@ -1,0 +1,71 @@
+﻿================================================================
+ArrayOp benchmark results
+Date    : 2026-06-17 12:41:05
+File    : testPerf/ArrayOp/wss_array.phopol
+Scenario: in-memory OCCURS table — populate + compute/aggregate
+          no packed decimal; float64 + binary int + strings
+================================================================
+--- N = 10 000 ---
+
+PHoPol C extension
+Implementation:        PHoPol C extension
+Rows:                  10000
+loadSection():         1.67 ms
+Phase 1 populate:      10.05 ms
+Phase 2 compute:       11.14 ms
+Total (1+2):           21.19 ms
+Peak PHP memory:       6.00 MB
+                       (C-side buffer ~0.5 MB not counted)
+
+Aggregates (checksum):
+  sumAmount  : 150,225,000.00
+  sumNet     : 135,934,750.00
+  countHigh  : 6850
+  maxPrice   : 252.50
+
+Pure PHP
+Implementation:        Pure PHP
+Rows:                  10000
+Phase 1 populate:      7.42 ms
+Phase 2 compute:       5.93 ms
+Total (1+2):           13.35 ms
+Peak PHP memory:       6.00 MB
+
+Aggregates (checksum):
+  sumAmount  : 150,225,000.00
+  sumNet     : 135,934,750.00
+  countHigh  : 6850
+  maxPrice   : 252.50
+
+--- N = 50 000 ---
+
+PHoPol C extension
+Implementation:        PHoPol C extension
+Rows:                  50000
+loadSection():         1.38 ms
+Phase 1 populate:      52.23 ms
+Phase 2 compute:       46.69 ms
+Total (1+2):           98.92 ms
+Peak PHP memory:       6.00 MB
+                       (C-side buffer ~2.3 MB not counted)
+
+Aggregates (checksum):
+  sumAmount  : 751,125,000.00
+  sumNet     : 679,673,750.00
+  countHigh  : 34250
+  maxPrice   : 252.50
+
+Pure PHP
+Implementation:        Pure PHP
+Rows:                  50000
+Phase 1 populate:      35.55 ms
+Phase 2 compute:       30.84 ms
+Total (1+2):           66.40 ms
+Peak PHP memory:       22.00 MB
+
+Aggregates (checksum):
+  sumAmount  : 751,125,000.00
+  sumNet     : 679,673,750.00
+  countHigh  : 34250
+  maxPrice   : 252.50
+

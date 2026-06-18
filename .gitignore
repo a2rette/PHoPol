@@ -1,0 +1,19 @@
+# Compiled extension
+*.dll
+*.so
+*.obj
+*.lib
+*.exp
+
+# Build logs
+ext/build/build_err.txt
+ext/build/build_out.txt
+
+# Generated binary data files (recreated by generate_data.php / create_employees.php)
+*.dat
+
+# Zip archives (git is the archive)
+archive/*.zip
+
+# Personal
+prompt.txt

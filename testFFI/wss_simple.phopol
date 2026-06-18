@@ -1,0 +1,274 @@
+<?php
+
+//================================================================
+// wss_simple.phopol
+// A small self-contained WSS for prototype testing.
+// Covers: elementary fields, binary, packed, redefines,
+//         occurs, condition names.
+//================================================================
+
+namespace wss {
+
+    //------------------------------------------------------------
+    // Simple identification level
+    //------------------------------------------------------------
+    level(01) $WsIdentification {
+        string<10>  $programName = 'TEST';
+        uint<2>     $version     = 1;
+        uint<2>     $revision    = 0;
+    }
+
+    //------------------------------------------------------------
+    // Date — flat and structured view (REDEFINES)
+    //------------------------------------------------------------
+    level(01) $WsDateNumeric {
+        uint<8> $date;
+    }
+
+    level(01) $WsDateParts redefines $WsDateNumeric {
+        uint<4> $yyyy;
+        uint<2> $mm;
+        uint<2> $dd;
+    }
+
+    //------------------------------------------------------------
+    // Status with condition names (88)
+    //------------------------------------------------------------
+    level(01) $WsStatus {
+        string<2> $statusCode;
+        when $statusCode == 'OK'        : bool $isOk;
+        when $statusCode == 'ER'        : bool $isError;
+        when $statusCode == 'FT'        : bool $isFatal;
+
+        int<4> binary $returnCode;
+        when $returnCode == 0       : bool $isSuccess;
+        when $returnCode in 1..4    : bool $isWarning;
+        when $returnCode in 8..99   : bool $isBadError;
+    }
+
+    //------------------------------------------------------------
+    // Binary and packed fields
+    //------------------------------------------------------------
+    level(01) $WsNumeric {
+        int<9>        binary $binCounter;
+        sdecimal<7,2> packed $packedAmount;
+        float64              $floatVal;
+    }
+
+    //------------------------------------------------------------
+    // Fixed table — month calendar
+    //------------------------------------------------------------
+    level(01) $WsCalendar {
+        level(05) $month occurs(12, index: $monthIdx) {
+            string<9>     $monthName;
+            uint<2>       $monthDays;
+            sdecimal<9,2> packed $monthTotal;
+        }
+    }
+
+    //------------------------------------------------------------
+    // Sorted table — for search_all() test
+    //------------------------------------------------------------
+    level(01) $WsCodeTable {
+        level(05) $codeEntry occurs(5,
+                                    asc: $code,
+                                    index: $codeIdx) {
+            string<5>  $code;
+            string<20> $description;
+        }
+    }
+
+    //------------------------------------------------------------
+    // Employee — multi-level nesting (01 → 05 → leaf)
+    // Tests: nested group flattening, alpha type, 88-conditions
+    // inside sub-group, packed + binary + float in one level.
+    //------------------------------------------------------------
+    level(01) $WsEmployee {
+
+        level(05) $empHeader {
+            string<6>  $employeeId;
+            string<30> $employeeName;
+            alpha<1>   $employeeGender;
+            string<1>  $employeeStatus;
+            when $employeeStatus == 'A' : bool $isActive;
+            when $employeeStatus == 'R' : bool $isRetired;
+            when $employeeStatus == 'T' : bool $isTerminated;
+        }
+
+        level(05) $empSalary {
+            sdecimal<11,2> packed $baseSalary;
+            sdecimal<9,2>  packed $bonus;
+            sdecimal<11,2> packed $totalComp;
+            int<4>  binary        $payGrade;
+        }
+
+        level(05) $empStats {
+            uint<8>  $hireDate;
+            uint<8>  $reviewDate;
+            uint<3>  $yearsService;
+            float64  $performanceScore;
+        }
+    }
+
+    //------------------------------------------------------------
+    // Employee copy — subset of WsEmployee fields.
+    // Used to verify move_corresponding only copies matching names.
+    //------------------------------------------------------------
+    level(01) $WsEmployeeCopy {
+
+        level(05) $empHeader {
+            string<6>  $employeeId;
+            string<30> $employeeName;
+        }
+
+        level(05) $empSalary {
+            sdecimal<11,2> packed $baseSalary;
+            sdecimal<9,2>  packed $bonus;
+            sdecimal<11,2> packed $totalComp;
+            int<4>  binary        $payGrade;
+        }
+    }
+
+    //------------------------------------------------------------
+    // Order — header + OCCURS detail lines (ODO) + grand total.
+    // Tests: cell() access, move_corresponding between cells.
+    //------------------------------------------------------------
+    level(01) $WsOrder {
+        string<12>     $orderId;
+        uint<8>        $orderDate;
+        string<40>     $customerName;
+        int<4>  binary $lineCount = ZERO;
+
+        level(05) $orderLine occurs(5,
+                                    depending: $lineCount,
+                                    index: $lineIdx) {
+            string<10>    $lineCode;
+            uint<3>       $lineQty;
+            sdecimal<7,2> packed $linePrice;
+            sdecimal<9,2> packed $lineTotal;
+        }
+
+        sdecimal<11,2> packed $orderGrandTotal;
+    }
+
+    //------------------------------------------------------------
+    // Order summary — same OCCURS structure as WsOrder lines.
+    // Used to test move_corresponding and add_corresponding
+    // between PHoPolLevel objects returned by cell().
+    //------------------------------------------------------------
+    level(01) $WsOrderSummary {
+
+        level(05) $orderLine occurs(5, index: $lineIdx) {
+            string<10>    $lineCode;
+            uint<3>       $lineQty;
+            sdecimal<7,2> packed $linePrice;
+            sdecimal<9,2> packed $lineTotal;
+        }
+
+        sdecimal<11,2> packed $summaryTotal;
+    }
+
+    //------------------------------------------------------------
+    // Report output line — used by report_employees.php.
+    // Edited picture fields declare the print width; the caller
+    // formats each value with edit_format() and stores the result.
+    //
+    // Layout (86 bytes total):
+    //   rlId(6) sp rlName(30) sp rlSalary(14) sp rlBonus(10)
+    //   sp rlHireDate(10) sp rlGrade(2) sp rlScore(6) sp rlMarker(1)
+    //------------------------------------------------------------
+    level(01) $WsReportLine {
+        string<6>                 $rlId;
+        filler string<1>          = SPACE;
+        string<30>                $rlName;
+        filler string<1>          = SPACE;
+        edited<"ZZZ,ZZZ,ZZ9.99"> $rlSalary;
+        filler string<1>          = SPACE;
+        edited<"ZZZ,ZZZ.99">     $rlBonus;
+        filler string<1>          = SPACE;
+        edited<"9999/99/99">      $rlHireDate;
+        filler string<1>          = SPACE;
+        edited<"Z9">              $rlGrade;
+        filler string<1>          = SPACE;
+        edited<"ZZ9.99">          $rlScore;
+        filler string<1>          = SPACE;
+        string<1>                 $rlMarker;
+    }
+
+    //------------------------------------------------------------
+    // OCCURS DEPENDING ON
+    // Physical buffer: activeRows(2) + 5*13 + tableFooter(10) = 77 bytes
+    // Logical access limited to the first $activeRows entries.
+    //------------------------------------------------------------
+    level(01) $WsDynTable {
+        int<2>     $activeRows;
+        level(05)  $dataRow occurs(0..5, depending: $activeRows, index: $rowIdx) {
+            string<8>  $rowCode;
+            int<5>     $rowValue;
+        }
+        string<10> $tableFooter;
+    }
+
+    //------------------------------------------------------------
+    // Nested OCCURS — outer row x inner col, plus fields at
+    // every level (before and after the OCCURS groups).
+    //------------------------------------------------------------
+    level(01) $WsGrid {
+        string<8>  $gridId;
+        level(05) $gridRow occurs(3, index: $rowIdx) {
+            string<4>  $rowLabel;
+            level(10) $gridCol occurs(4, index: $colIdx) {
+                string<3>  $colLabel;
+                int<4>     $cellValue;
+            }
+            int<3>     $rowSum;
+        }
+        string<6>  $gridFooter;
+    }
+
+    //------------------------------------------------------------
+    // Sub-group REDEFINES — prCharView (string + uint) and
+    // prBinaryView (binary ints) share the same first 8 bytes.
+    // prDescription at byte 8 is independent.
+    //------------------------------------------------------------
+    level(01) $WsPackedRecord {
+        level(05) $prCharView {
+            string<4>  $prCode;
+            uint<4>    $prSerial;
+        }
+        level(05) $prBinaryView redefines $prCharView {
+            int<9>  binary $prHighWord;   // 5-9 digits → 4 bytes, matching string<4>
+            int<9>  binary $prLowWord;    // 5-9 digits → 4 bytes, matching uint<4>
+        }
+        string<20> $prDescription;
+    }
+
+    //------------------------------------------------------------
+    // Field REDEFINES — frDate (uint<8>) and frDateAlpha
+    // (string<8>) overlay the same 8 bytes.
+    // frLabel starts at byte 8 and is independent.
+    //------------------------------------------------------------
+    level(01) $WsFieldRedef {
+        uint<8>    $frDate;
+        string<8>  $frDateAlpha redefines $frDate;
+        string<10> $frLabel;
+    }
+
+    //------------------------------------------------------------
+    // Anonymous group REDEFINES — exposes each of the 4 bytes
+    // of $word as an individual leaf-OCCURS cell.
+    //------------------------------------------------------------
+    level(01) $WsWordAlpha {
+        string<4> $word;
+        level(05) redefines $word {
+            string<1> $byte occurs(4, index: $byteIdx);
+        }
+    }
+
+    //------------------------------------------------------------
+    // Standalone fields (level 77)
+    //------------------------------------------------------------
+    standalone int<5>    packed $standaloneCtr  = ZERO;
+    standalone string<1>        $standaloneFlag = 'N';
+
+}

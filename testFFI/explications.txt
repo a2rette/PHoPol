@@ -1,0 +1,133 @@
+┌─────────────────────────────────────────────────────────┐
+│  wss_simple.phopol                                      │
+│  Your declarations: level(), occurs(), when, redefines  │
+│  This is the SOURCE OF TRUTH about your data structure  │
+└────────────────────┬────────────────────────────────────┘
+                     │  read once at startup
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  PHoPolParser                                           │
+│  Reads your declarations and for every field computes:  │
+│    - at what byte offset does it start?                 │
+│    - how many bytes long is it?                         │
+│    - what type is it? (string, binary, packed...)       │
+│  Produces a PHoPolLayout — essentially a map:           │
+│    "yyyy starts at byte 0, is 4 bytes, type Display"    │
+│    "mm   starts at byte 4, is 2 bytes, type Display"    │
+│  This is done ONCE, like compiling a C struct.          │
+└────────────────────┬────────────────────────────────────┘
+                     │  one layout per level(01)
+                     ▼
+┌─────────────────────────────────────────────────────────┐
+│  PHoPolLevel                                            │
+│  The runtime object. Holds:                             │
+│    - a flat byte buffer (the actual memory)             │
+│    - a pointer to its PHoPolLayout (the map)            │
+│  When you call  ->get('yyyy')  it does:                 │
+│    "layout says yyyy is at offset 0, length 4"          │
+│    → reads 4 bytes from the buffer at offset 0          │
+│    → converts them to a PHP integer                     │
+│    → returns it                                         │
+│  When you call  ->set('yyyy', 2026)  it does:           │
+│    → converts 2026 to 4 ASCII bytes                     │
+│    → writes them into the buffer at offset 0            │
+│  No search, no hash lookup after first access.          │
+│  Just: offset + length = pointer arithmetic.            │
+└────────────────────┬────────────────────────────────────┘
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+          ▼                     ▼
+┌──────────────────┐   ┌──────────────────────────────────┐
+│  attach()        │   │  REDEFINES                       │
+│                  │   │                                  │
+│  You read raw    │   │  Two PHoPolLevel objects         │
+│  bytes from a    │   │  pointing at the SAME buffer.    │
+│  file:           │   │                                  │
+│                  │   │  $WsDateNumeric  ──┐             │
+│  $raw = fread(   │   │  $WsDateParts    ──┴─► [bytes]   │
+│    $fd, 14);     │   │                                  │
+│                  │   │  Writing $yyyy through one       │
+│  $id->attach(    │   │  immediately changes what        │
+│    $raw);        │   │  $date reads through the other.  │
+│                  │   │  Exactly like COBOL.             │
+│  The bytes are   │   │  Zero copy, zero overhead.       │
+│  now in the      │   └──────────────────────────────────┘
+│  level's buffer  │
+│  ready to use.   │
+└──────────────────┘
+
+
+A concrete walk-through :
+
+File on disk:
+  bytes: 32 30 32 36 30 36 30 34   ("20260604" in ASCII)
+
+$dateNum->attach("20260604");
+  → copies those 8 bytes into $dateNum's buffer
+
+$dateNum->get('date')
+  → layout says: date is at offset 0, length 8, type Display numeric
+  → reads bytes 0..7 from buffer
+  → converts "20260604" → integer 20260604
+  → returns 20260604
+
+$dateParts->get('yyyy')
+  → $dateParts shares the SAME buffer (redefines)
+  → layout says: yyyy is at offset 0, length 4
+  → reads bytes 0..3
+  → converts "2026" → integer 2026
+  → returns 2026
+
+$dateParts->get('mm')
+  → offset 4, length 2
+  → reads bytes 4..5
+  → "06" → 6
+
+$dateParts->set('dd', 99)
+  → offset 6, length 2
+  → converts 99 → "99"
+  → writes into bytes 6..7 of the shared buffer
+  → now $dateNum->get('date') returns 20260699
+
+
+What the test does : 
+
+test_prototype.php
+  │
+  ├── bootstrap(wss_simple.phopol)
+  │     parse → compute layouts → allocate buffers → wire redefines
+  │
+  ├── Test 2-6:  set/get each field type
+  │     string, uint, binary, packed, float
+  │     → verifies encode/decode round-trips correctly
+  │
+  ├── Test 7:    REDEFINES
+  │     write date as integer, read back as yyyy/mm/dd
+  │     write parts, read back as integer
+  │     → verifies both levels truly share one buffer
+  │
+  ├── Test 8:    attach()
+  │     simulate a file read: hand a raw string to a level
+  │     → verifies the field values come out correctly
+  │
+  ├── Test 9:    OCCURS
+  │     fill a 12-entry month table, read back specific cells
+  │     → verifies offset arithmetic for table entries
+  │
+  ├── Test 10:   condition names (88)
+  │     set statusCode = 'OK', test isCond('isOk') == true
+  │     set returnCode = 3,    test isCond('isWarning') == true
+  │     setCond('isOk', true) → verifies statusCode becomes 'OK'
+  │
+  ├── Test 11:   search_all()
+  │     binary search on sorted code table
+  │     → finds 'DELTA' at index 3, returns null for unknown key
+  │
+  ├── Test 12:   move_corresponding()
+  │     copies matching field names between two levels
+  │
+  └── Test 13:   rawBytes()
+        exports buffer as a string → ready to fwrite() to a file
+
+

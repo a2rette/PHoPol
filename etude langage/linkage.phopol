@@ -1,0 +1,132 @@
+<?php
+
+//================================================================
+// linkage.phopol
+// LINKAGE SECTION — PHP/COBOL
+//
+// The LINKAGE SECTION defines the data interface between a
+// calling program and a called sub-program (CALL / CALLED BY).
+//
+// In COBOL:
+//   - Declared in the called program only
+//   - Fields are NOT allocated here — they map onto storage
+//     passed by the caller via the USING clause
+//   - The caller populates these fields before CALL,
+//     and reads results from them after CALL returns
+//
+// In PHP/COBOL:
+//   - Declared as  namespace linkage { }  in the called program
+//   - The calling program does  using linkage;  to populate
+//     input fields before calling, and read output fields after
+//   - The called program does  using linkage;  to access
+//     the fields passed in, and write results back
+//   - Same  using  syntax as wss — fields come into scope
+//     unqualified; qualify with $LevelName->field on collision
+//
+// Typical pattern in caller (procedure.phopol):
+//   function callSamples(): void
+//   {
+//       using wss;
+//       using linkage;
+//       $inputKey    = $sortKey;    // populate before CALL
+//       $inputAmount = $total;
+//       subprog();                  // CALL 'SUBPROG'
+//       $result = $outputAmount;    // read results after CALL
+//   }
+//
+// Typical pattern in called sub-program:
+//   function subprog(): void
+//   {
+//       using wss;
+//       using linkage;
+//       if ($inputAmount > 0) {     // read input fields
+//           $outputAmount = $inputAmount * 2;  // write output
+//       }
+//   }
+//================================================================
+
+namespace linkage {
+
+    //------------------------------------------------------------
+    // INPUT LEVEL — data passed FROM the caller TO this program
+    // COBOL: 01 LK-INPUT-LEVEL.
+    //------------------------------------------------------------
+
+    level(01) $LkInputLevel {
+        string<10>    $inputKey;                  // PIC X(10)
+        sdecimal<9,2> packed $inputAmount;        // PIC S9(9)V99 COMP-3
+        string<2>     $inputStatusCode;           // PIC X(2)
+        uint<8>       $inputDate;                 // PIC 9(8)  YYYYMMDD
+    }
+
+
+    //------------------------------------------------------------
+    // OUTPUT LEVEL — data returned FROM this program TO the caller
+    // COBOL: 01 LK-OUTPUT-LEVEL.
+    //------------------------------------------------------------
+
+    level(01) $LkOutputLevel {
+        sdecimal<9,2> packed $outputAmount;       // PIC S9(9)V99 COMP-3
+        string<2>     $outputStatusCode;          // PIC X(2)
+        string<40>    $outputMessage;             // PIC X(40)
+        int<4> binary $outputReturnCode;          // PIC S9(4) COMP
+    }
+
+
+    //------------------------------------------------------------
+    // INPUT/OUTPUT LEVEL — updated in place by this program
+    // COBOL: 01 LK-INOUT-LEVEL.
+    // The caller passes a value; the sub-program modifies it;
+    // the caller reads the updated value on return.
+    //------------------------------------------------------------
+
+    level(01) $LkInOutLevel {
+        int<9>  binary $ioCounter;                // PIC S9(9) BINARY
+        string<1>      $ioFlag;                   // PIC X
+        when $ioFlag == 'Y' | 'y' : bool $ioIsActive;   // condition name on linkage field
+        when $ioFlag == 'N' | 'n' : bool $ioIsInactive;
+    }
+
+
+    //------------------------------------------------------------
+    // TABLE PASSED BY REFERENCE
+    // COBOL allows passing a table element or an entire table
+    // via LINKAGE. The called program sees a fixed-size window.
+    // COBOL: 01 LK-ITEM-TABLE.
+    //           05 LK-ITEM OCCURS 100 TIMES ...
+    //------------------------------------------------------------
+
+    level(01) $LkItemTable {
+        int<4> binary $lkItemCount = ZERO;        // ODO object passed from caller
+
+        level(05) $lkItem occurs(1..100,
+                                 depending: $lkItemCount,
+                                 index: $lkItemIdx) {
+            string<5>     $lkItemCode;            // PIC X(5)
+            sdecimal<7,2> packed $lkItemValue;    // PIC S9(7)V99 COMP-3
+            string<1>     $lkItemFlag;            // PIC X
+            when $lkItemFlag == 'Y' : bool $lkItemIsValid;
+            when $lkItemFlag == 'N' : bool $lkItemIsInvalid;
+        }
+    }
+
+
+    //------------------------------------------------------------
+    // RETURN CODE — standard interface convention
+    // Many COBOL shops pass a standard return-code record
+    // as the last USING parameter so the caller always knows
+    // whether the sub-program succeeded.
+    // COBOL: 01 LK-RETURN-CODE.
+    //------------------------------------------------------------
+
+    level(01) $LkReturnCode {
+        int<4> binary $lkReturnCode = ZERO;       // PIC S9(4) COMP  VALUE 0
+        string<80>    $lkReturnMessage = SPACES;  // PIC X(80)  VALUE SPACES
+        when $lkReturnCode == 0        : bool $lkIsSuccess;
+        when $lkReturnCode in 1..4     : bool $lkIsWarning;
+        when $lkReturnCode in 8..99    : bool $lkIsError;
+        when $lkReturnCode in 100..999 : bool $lkIsAbend;
+    }
+
+}
+//  end namespace linkage

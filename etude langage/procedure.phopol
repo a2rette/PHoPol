@@ -1,0 +1,762 @@
+<?php
+
+//================================================================
+// procedure.phopol
+// PROCEDURE DIVISION — full PHP/COBOL hybrid
+//
+// Conventions:
+//   using wss;         brings all WSS fields into scope unqualified
+//   using linkage;     same for LINKAGE SECTION fields
+//   $fieldName         unambiguous field — no qualification
+//   $LevelName->field ambiguous field — explicit record qualification
+//   $table[$idx]->field  table cell sub-field access
+//   All WSS fields are global — no parameters passed to paragraphs
+//================================================================
+
+require 'wss.phopol';
+require 'linkage.phopol';
+
+
+//================================================================
+// MAIN — equivalent of the top-level PROCEDURE DIVISION statements
+// executed sequentially before any paragraph calls.
+// In COBOL this is the mainline: a series of PERFORMs.
+//================================================================
+
+initialiseWorkingStorage();
+validateInput();
+processAllMonths();
+calculateTotals();
+writeOutput();
+exit(0);                                     // STOP RUN — normal end of program
+
+
+//================================================================
+// INITIALISATION
+//================================================================
+
+// COBOL:
+//   INITIALISE-WORKING-STORAGE.
+//       MOVE SPACES TO WS-STANDALONE-FLAG
+//       MOVE ZERO   TO WS-STANDALONE-CTR
+//       MOVE SPACES TO WS-STATUS-CODE
+//       SET WS-SWITCH-OFF TO TRUE
+
+function initialiseWorkingStorage(): void
+{
+    using wss;
+
+    $standaloneFlag          = SPACES;        // MOVE SPACES TO WS-STANDALONE-FLAG
+    $standaloneCtr           = ZERO;          // MOVE ZERO   TO WS-STANDALONE-CTR
+    $statusCode              = SPACES;        // MOVE SPACES TO WS-STATUS-CODE
+    $WsSwitch->isOff         = true;          // SET WS-SWITCH-OFF TO TRUE
+    $WsIdentification->programName = 'SHOWCASE'; // MOVE 'SHOWCASE' TO WS-PROGRAM-NAME
+}
+
+
+//================================================================
+// MOVE
+//================================================================
+
+// COBOL:
+//   MOVE-SAMPLES.
+//       MOVE 'HELLO'  TO WS-PROGRAM-NAME
+//       MOVE SPACES   TO WS-CHAR-SPACES
+//       MOVE ZERO     TO WS-INT-5
+//       MOVE WS-VERSION TO WS-REVISION
+//       MOVE CORRESPONDING WS-DATE-PARTS TO WS-DATE-PARTS-BACKUP
+//       MOVE 'JAN'    TO WS-MONTH-NAME(1)
+
+function moveSamples(): void
+{
+    using wss;
+
+    $programName  = 'HELLO';                  // MOVE 'HELLO' TO WS-PROGRAM-NAME
+    $charSpaces   = SPACES;                   // MOVE SPACES  TO WS-CHAR-SPACES
+    $int5         = ZERO;                     // MOVE ZERO    TO WS-INT-5
+    $revision     = $version;                 // MOVE WS-VERSION TO WS-REVISION
+
+    // MOVE CORRESPONDING — built-in, copies fields with matching names
+    move_corresponding($WsDateParts, $WsDatePartsBackup);
+
+    // MOVE to table cell — 1-based index
+    $monthEntry[1]->monthName = 'JAN';        // MOVE 'JAN' TO WS-MONTH-NAME(1)
+    $monthEntry[1]->monthDays = 31;
+
+    // MOVE via index variable
+    $monthIdx = 3;
+    $monthEntry[$monthIdx]->monthName = 'MAR';
+
+    // MOVE to multi-dimensional table cell
+    $row[2]->cell[5]->cellVal = 99.50;
+
+    // MOVE HIGH-VALUES / LOW-VALUES
+    $highByte  = HIGH_VALUES;
+    $lowByte   = LOW_VALUES;
+
+    // Ambiguous $date field — qualify explicitly
+    $WsDateNumeric->date = 20260604;
+    $WsDateParts->yyyy   = 2026;              // unambiguous — $yyyy alone would work too
+    $WsDateParts->mm     = 6;
+    $WsDateParts->dd     = 4;
+}
+
+
+//================================================================
+// ARITHMETIC
+//================================================================
+
+// COBOL:
+//   CALCULATE-TOTALS.
+//       ADD 1 TO WS-STANDALONE-CTR
+//       ADD WS-VERSION TO WS-REVISION
+//       ADD WS-AMOUNT TO WS-TOTAL ROUNDED
+//       SUBTRACT 1 FROM WS-STANDALONE-CTR
+//       SUBTRACT WS-AMOUNT FROM WS-TOTAL GIVING WS-RESULT
+//       MULTIPLY WS-QTY BY WS-PRICE GIVING WS-TOTAL ROUNDED
+//       DIVIDE WS-TOTAL BY WS-COUNT GIVING WS-QUOTIENT REMAINDER WS-REMAINDER
+//       COMPUTE WS-RESULT = (WS-A + WS-B) * WS-C / WS-D
+
+function calculateTotals(): void
+{
+    using wss;
+
+    // ADD
+    $standaloneCtr += 1;                      // ADD 1 TO WS-STANDALONE-CTR
+    $revision      += $version;               // ADD WS-VERSION TO WS-REVISION
+
+    // ADD ... ROUNDED — round() scale comes from field PIC declaration
+    $amountSigned = round($amountSigned + 100, 2);  // ADD 100 TO WS-AMOUNT ROUNDED
+
+    // ADD CORRESPONDING
+    add_corresponding($WsAmounts, $WsAmountsTotal);
+
+    // SUBTRACT
+    $standaloneCtr -= 1;                      // SUBTRACT 1 FROM WS-STANDALONE-CTR
+    $result         = $total - $amount;       // SUBTRACT WS-AMOUNT FROM WS-TOTAL GIVING WS-RESULT
+
+    // MULTIPLY
+    $total = round($qty * $price, 2);         // MULTIPLY WS-QTY BY WS-PRICE GIVING WS-TOTAL ROUNDED
+    $version *= 2;                            // MULTIPLY 2 BY WS-VERSION
+
+    // DIVIDE
+    $average   = round($total / $count, 2);   // DIVIDE WS-TOTAL BY WS-COUNT GIVING WS-AVERAGE ROUNDED
+    $quotient  = intdiv($total, $count);      // DIVIDE ... GIVING WS-QUOTIENT
+    $remainder = $total % $count;             //            REMAINDER WS-REMAINDER
+
+    // COMPUTE
+    $result    = ($a + $b) * $c / $d;        // COMPUTE WS-RESULT = (WS-A + WS-B) * WS-C / WS-D
+    $piApprox  = round(355 / 113, 8);        // COMPUTE WS-PI-APPROX ROUNDED = 355 / 113
+
+    // COMPUTE on table cell
+    $row[1]->cell[1]->cellVal =
+        $row[1]->cell[2]->cellVal
+        + $row[2]->cell[1]->cellVal;
+}
+
+
+//================================================================
+// IF / ELSE — condition names, figurative constants, comparisons
+//================================================================
+
+// COBOL:
+//   VALIDATE-INPUT.
+//       IF WS-STATUS-OK
+//           ADD 1 TO WS-STANDALONE-CTR
+//       END-IF
+//       IF NOT WS-STATUS-OK
+//           MOVE 'N' TO WS-STANDALONE-FLAG
+//       END-IF
+//       IF WS-AMOUNT > ZERO AND WS-AMOUNT < 1000
+//           MOVE WS-AMOUNT TO WS-PR-AMOUNT
+//       END-IF
+
+function validateInput(): void
+{
+    using wss;
+
+    // condition name as boolean — IF WS-STATUS-OK
+    if ($isOk) {
+        $standaloneCtr += 1;
+    }
+
+    // IF NOT WS-STATUS-OK
+    if (! $isOk) {
+        $standaloneFlag = 'N';
+    }
+
+    // AND / OR
+    if ($isOk && $returnCode < 10) {
+        $standaloneFlag = 'Y';
+    }
+
+    if ($isError || $isFatal) {
+        $standaloneFlag = 'N';
+    }
+
+    // figurative constant comparison
+    if ($charSpaces === SPACES) {
+        $charSpaces = 'DEFAULT';
+    }
+
+    // range comparison
+    if ($amountSigned > 0 && $amountSigned < 1000) {
+        $prAmount = $amountSigned;
+    }
+
+    // table cell comparison
+    if ($byte[3] === 'X') {
+        $byte[3] = 'Y';
+    }
+
+    // nested IF
+    if ($WsSwitch->isOn) {
+        if ($isSuccess) {
+            $result = $total;
+        } else {
+            $result = ZERO;
+        }
+    } else {
+        $result = ZERO;
+    }
+}
+
+
+//================================================================
+// SET — condition names and index variables
+//================================================================
+
+// COBOL:
+//   SET-SAMPLES.
+//       SET WS-STATUS-OK   TO TRUE
+//       SET WS-SWITCH-ON   TO TRUE
+//       SET WS-SWITCH-OFF  TO TRUE
+//       SET WS-MONTH-IDX   TO 1
+//       SET WS-MONTH-IDX   UP BY 1
+//       SET WS-MONTH-IDX   DOWN BY 1
+
+function setSamples(): void
+{
+    using wss;
+
+    // SET condition name TO TRUE — runtime reverse-maps to parent field value
+    $WsStatusCode->isOk  = true;             // sets $statusCode = 'OK'
+    $WsSwitch->isOn      = true;             // sets $switch = 'Y'
+    $WsSwitch->isOff     = true;             // sets $switch = 'N'
+
+    // SET condition name TO FALSE — sets field to LOW_VALUES
+    $WsStatusCode->isError = false;
+
+    // SET index
+    $monthIdx  = 1;                          // SET WS-MONTH-IDX TO 1
+    $monthIdx++;                             // SET WS-MONTH-IDX UP BY 1
+    $monthIdx--;                             // SET WS-MONTH-IDX DOWN BY 1
+    $monthIdx += 3;                          // SET WS-MONTH-IDX UP BY 3
+}
+
+
+//================================================================
+// EVALUATE
+//================================================================
+
+// COBOL:
+//   EVALUATE-SAMPLES.
+//       EVALUATE WS-STATUS-CODE
+//         WHEN 'OK'      ...
+//         WHEN 'ER' 'EX' ...
+//         WHEN OTHER     ...
+//       END-EVALUATE
+
+function evaluateSamples(): void
+{
+    using wss;
+
+    // --- simple subject → match() ---
+    // EVALUATE WS-STATUS-CODE
+    $result = match($statusCode) {
+        'OK'       => 1,                     // WHEN 'OK'
+        'WN'       => 2,                     // WHEN 'WN'
+        'ER', 'EX' => 3,                     // WHEN 'ER' 'EX'  (multi-value)
+        default    => 0,                     // WHEN OTHER
+    };
+
+    // --- EVALUATE TRUE with condition names → match(true) ---
+    // Clean when conditions are discrete (no ranges)
+    // EVALUATE TRUE
+    //   WHEN WS-RC-SUCCESS ...
+    //   WHEN WS-RC-WARNING ...
+    $standaloneFlag = match(true) {
+        $isSuccess => 'S',
+        $isWarning => 'W',
+        $isError   => 'E',
+        $isAbend   => 'A',
+        default    => '?',
+    };
+
+    // --- EVALUATE TRUE with ranges → if/elseif ---
+    // match() cannot handle ranges — condition name properties
+    // hide the range logic cleanly
+    // EVALUATE TRUE
+    //   WHEN WS-RC-SUCCESS  ...
+    //   WHEN WS-RC-WARNING  ...  (1 THRU 4)
+    //   WHEN WS-RC-ERROR    ...  (8 THRU 99)
+    if ($isSuccess) {
+        $result = 0;
+    } elseif ($isWarning) {                  // internally: 1..4
+        $result = 1;
+    } elseif ($isError) {                    // internally: 8..99
+        $result = 2;
+    } elseif ($isAbend) {                    // internally: 100..999
+        $result = 3;
+    } else {
+        $result = -1;
+    }
+
+    // --- EVALUATE ALSO (multiple subjects) → if/elseif ---
+    // No PHP construct handles this natively
+    // EVALUATE WS-STATUS-CODE ALSO WS-RETURN-CODE
+    //   WHEN 'OK' ALSO 0       ...
+    //   WHEN 'WN' ALSO 1 THRU 4 ...
+    //   WHEN OTHER ALSO OTHER  ...
+    if ($statusCode === 'OK' && $returnCode === 0) {
+        $result = 1;
+    } elseif ($statusCode === 'WN' && $isWarning) {
+        $result = 2;
+    } else {
+        $result = 0;
+    }
+}
+
+
+//================================================================
+// PERFORM — paragraphs, loops, VARYING
+//================================================================
+
+// --- Simple PERFORM ---
+
+// COBOL:
+//   PERFORM PROCESS-ALL-MONTHS
+//   PERFORM CLEAR-MATRIX
+
+function processAllMonths(): void
+{
+    using wss;
+
+    for ($monthIdx = 1; $monthIdx <= 12; $monthIdx++) {
+        processMonth();
+    }
+}
+
+function processMonth(): void
+{
+    using wss;
+
+    $monthEntry[$monthIdx]->monthTotal =
+        $monthEntry[$monthIdx]->monthDays * 24;
+}
+
+
+// --- PERFORM n TIMES ---
+
+// COBOL:  PERFORM PROCESS-ITEM 5 TIMES
+function performNTimes(): void
+{
+    using wss;
+
+    for ($i = 0; $i < 5; $i++) {
+        processItem();
+    }
+}
+
+function processItem(): void
+{
+    using wss;
+
+    if ($isError) {
+        $WsSwitch->isOff = true;
+    }
+    $itemCount += 1;
+}
+
+
+// --- PERFORM UNTIL (test before) → while() ---
+
+// COBOL:  PERFORM PROCESS-ITEM UNTIL WS-SWITCH-OFF
+function performUntil(): void
+{
+    using wss;
+
+    while (! $WsSwitch->isOff) {             // UNTIL inverts to while(!cond)
+        processItem();
+    }
+}
+
+
+// --- PERFORM WITH TEST AFTER UNTIL → do/while() ---
+
+// COBOL:  PERFORM PROCESS-ITEM WITH TEST AFTER UNTIL WS-SWITCH-OFF
+function performUntilTestAfter(): void
+{
+    using wss;
+
+    do {
+        processItem();
+    } while (! $WsSwitch->isOff);
+}
+
+
+// --- PERFORM VARYING → for() ---
+
+// COBOL:
+//   PERFORM VARYING WS-MONTH-IDX FROM 1 BY 1
+//     UNTIL WS-MONTH-IDX > 12
+//     PERFORM PROCESS-MONTH
+//   END-PERFORM
+
+function performVarying(): void
+{
+    using wss;
+
+    // forward, step 1
+    for ($monthIdx = 1; $monthIdx <= 12; $monthIdx++) {
+        processMonth();
+    }
+
+    // backward, step 1
+    for ($monthIdx = 12; $monthIdx >= 1; $monthIdx--) {
+        $monthEntry[$monthIdx]->monthName = SPACES;
+    }
+
+    // custom step
+    // COBOL: PERFORM VARYING WS-IDX FROM 2 BY 2 UNTIL WS-IDX > 100
+    for ($idx = 2; $idx <= 100; $idx += 2) {
+        $counts[$idx] = ZERO;
+    }
+
+    // ODO table — bound from WSS field
+    // COBOL: PERFORM VARYING WS-ITEM-IDX FROM 1 BY 1
+    //          UNTIL WS-ITEM-IDX > WS-ITEM-COUNT
+    for ($itemIdx = 1; $itemIdx <= $itemCount; $itemIdx++) {
+        $item[$itemIdx]->itemValue = ZERO;
+    }
+}
+
+
+// --- PERFORM VARYING with AFTER → nested for() ---
+
+// COBOL:
+//   PERFORM VARYING WS-ROW-IDX FROM 1 BY 1 UNTIL WS-ROW-IDX > 10
+//     AFTER WS-COL-IDX FROM 1 BY 1 UNTIL WS-COL-IDX > 10
+//     PERFORM CLEAR-CELL
+//   END-PERFORM
+
+function clearMatrix(): void
+{
+    using wss;
+
+    for ($rowIdx = 1; $rowIdx <= 10; $rowIdx++) {
+        for ($colIdx = 1; $colIdx <= 10; $colIdx++) {
+            clearCell();
+        }
+    }
+}
+
+function clearCell(): void
+{
+    using wss;
+
+    $row[$rowIdx]->cell[$colIdx]->cellVal = ZERO;
+}
+
+
+//================================================================
+// SEARCH — linear search (SEARCH) and binary search (SEARCH ALL)
+//================================================================
+
+// COBOL:
+//   SEARCH WS-MONTH-ENTRY
+//     AT END MOVE 'N' TO WS-STANDALONE-FLAG
+//     WHEN WS-MONTH-NAME(WS-MONTH-IDX) = 'MAR'
+//       MOVE WS-MONTH-DAYS(WS-MONTH-IDX) TO WS-RESULT
+//   END-SEARCH
+
+function searchLinear(): void
+{
+    using wss;
+
+    // SEARCH → linear scan with foreach, break on found
+    $found = false;
+    foreach ($monthEntry as $monthIdx => $entry) {
+        if ($entry->monthName === 'MAR') {
+            $result = $entry->monthDays;
+            $found  = true;
+            break;
+        }
+    }
+
+    // AT END clause
+    if (! $found) {
+        $standaloneFlag = 'N';
+    }
+}
+
+
+// COBOL:
+//   SEARCH ALL WS-SORTED-ENTRY
+//     AT END MOVE 'N' TO WS-STANDALONE-FLAG
+//     WHEN WS-SORT-KEY(WS-SORT-IDX) = 'TARGET-KEY'
+//       MOVE WS-SORT-DATA(WS-SORT-IDX) TO WS-RESULT-DATA
+//   END-SEARCH
+//
+// SEARCH ALL requires ASCENDING/DESCENDING KEY declared on the table
+// (ordered_by in our WSS syntax).
+// PHP has no native binary search on arrays — we use a helper.
+// search_all() is a PHP/COBOL built-in that exploits ordered_by metadata.
+
+function searchBinary(): void
+{
+    using wss;
+
+    // search_all() returns the matching index or null (AT END)
+    $sortIdx = search_all($sortedEntry, $sortKey, 'TARGET-KEY');
+
+    if ($sortIdx === null) {                 // AT END
+        $standaloneFlag = 'N';
+    } else {
+        $resultData = $sortedEntry[$sortIdx]->sortData;
+    }
+}
+
+
+//================================================================
+// STRING / UNSTRING
+//================================================================
+
+// COBOL:
+//   STRING WS-YYYY DELIMITED SIZE
+//          '/'     DELIMITED SIZE
+//          WS-MM   DELIMITED SIZE
+//          '/'     DELIMITED SIZE
+//          WS-DD   DELIMITED SIZE
+//     INTO WS-DATE-FORMATTED
+//   END-STRING
+
+function stringSamples(): void
+{
+    using wss;
+
+    // STRING ... DELIMITED SIZE — concatenate fields as-is (full field width)
+    // PHP: direct concatenation; PIC padding already in the field values
+    $dateFormatted = $yyyy . '/' . $mm . '/' . $dd;
+
+    // STRING with DELIMITED BY a character — stop at first occurrence of delimiter
+    // COBOL: STRING WS-FIRST-NAME DELIMITED ' '
+    //               ' '           DELIMITED SIZE
+    //               WS-LAST-NAME  DELIMITED ' '
+    //         INTO WS-FULL-NAME
+    // PHP: rtrim the field first, then concatenate
+    $fullName = rtrim($firstName) . ' ' . rtrim($lastName);
+
+    // STRING with POINTER — tracks current insert position
+    // COBOL: STRING ... INTO WS-OUTPUT POINTER WS-PTR
+    // PHP: build incrementally, track offset manually
+    $output = '';
+    $ptr    = 1;
+    $output = substr_replace($output, $programName, $ptr - 1);
+    $ptr   += strlen(rtrim($programName));
+}
+
+
+// COBOL:
+//   UNSTRING WS-DATE-FORMATTED
+//     DELIMITED '/'
+//     INTO WS-YYYY WS-MM WS-DD
+//   END-UNSTRING
+
+function unstringSamples(): void
+{
+    using wss;
+
+    // UNSTRING ... DELIMITED BY '/' INTO fields
+    // PHP: explode() maps cleanly
+    [$yyyy, $mm, $dd] = explode('/', $dateFormatted);
+
+    // UNSTRING with TALLYING (count of fields filled)
+    // COBOL: UNSTRING ... TALLYING WS-TALLY
+    $parts  = explode('/', $dateFormatted);
+    $tally  = count($parts);
+
+    // UNSTRING with multiple delimiters
+    // COBOL: UNSTRING WS-INPUT DELIMITED ',' OR ';' OR SPACE
+    $parts  = preg_split('/[,; ]/', $input);
+}
+
+
+//================================================================
+// INSPECT
+//================================================================
+
+// COBOL:
+//   INSPECT WS-CHAR-SPACES TALLYING WS-TALLY FOR ALL 'A'
+//   INSPECT WS-CHAR-SPACES REPLACING ALL 'A' BY 'B'
+//   INSPECT WS-CHAR-SPACES CONVERTING 'abc' TO 'ABC'
+
+function inspectSamples(): void
+{
+    using wss;
+
+    // INSPECT TALLYING FOR ALL — count occurrences
+    $tally = substr_count($charSpaces, 'A');
+
+    // INSPECT TALLYING FOR LEADING — count leading characters
+    $tally = strlen($charSpaces) - strlen(ltrim($charSpaces, 'A'));
+
+    // INSPECT REPLACING ALL
+    $charSpaces = str_replace('A', 'B', $charSpaces);
+
+    // INSPECT REPLACING LEADING
+    $charSpaces = ltrim($charSpaces, 'A');
+
+    // INSPECT CONVERTING (translate character by character)
+    $charSpaces = strtr($charSpaces, 'abcdefghijklmnopqrstuvwxyz',
+                                     'ABCDEFGHIJKLMNOPQRSTUVWXYZ');
+}
+
+
+//================================================================
+// GO TO ... DEPENDING ON → match()
+//================================================================
+
+// COBOL:
+//   GO TO PROCESS-ON PROCESS-OFF PROCESS-UNKNOWN
+//     DEPENDING ON WS-SWITCH
+
+function dispatch(): void
+{
+    using wss;
+
+    match($switch) {
+        'Y', 'y', '1' => processOn(),
+        'N', 'n', '0' => processOff(),
+        default        => processUnknown(),
+    };
+}
+
+function processOn(): void
+{
+    using wss;
+    $standaloneCtr += 1;
+}
+
+function processOff(): void
+{
+    using wss;
+    $standaloneCtr -= 1;
+}
+
+function processUnknown(): void
+{
+    using wss;
+    $WsReturnCode->isAbend = true;            // SET WS-RC-ABEND TO TRUE
+}
+
+
+//================================================================
+// CALL — calling a sub-program
+// COBOL passes data via LINKAGE SECTION + USING clause.
+// In PHP/COBOL: the called program declares  namespace linkage {}
+// and the caller populates it before calling.
+//================================================================
+
+// COBOL:
+//   MOVE WS-INPUT-KEY TO LK-INPUT-KEY
+//   CALL 'SUBPROG' USING LK-INPUT-LEVEL
+//   MOVE LK-OUTPUT-AMOUNT TO WS-RESULT
+
+function callSamples(): void
+{
+    using wss;
+    using linkage;
+
+    // populate linkage fields before the call
+    $inputKey    = $sortKey;                 // MOVE WS-SORT-KEY TO LK-INPUT-KEY
+    $inputAmount = $total;                   // MOVE WS-TOTAL TO LK-INPUT-AMOUNT
+
+    // CALL 'SUBPROG'
+    subprog();
+
+    // retrieve results from linkage after the call
+    $result = $outputAmount;                 // MOVE LK-OUTPUT-AMOUNT TO WS-RESULT
+}
+
+
+//================================================================
+// EXIT / STOP RUN
+//================================================================
+
+function someProcess(): void
+{
+    using wss;
+
+    if ($isAbend) {
+        exit(1);                             // STOP RUN — abnormal termination
+    }
+
+    if ($isError) {
+        exit(0);                             // EXIT PROGRAM — return to caller
+    }
+
+    // CONTINUE — explicit no-op
+    if ($isWarning) {
+        // CONTINUE
+    }
+
+    // early leave from this paragraph only — not an exit
+    if ($isWarn) {
+        return;                              // skip remaining sentences in paragraph
+    }
+
+    // normal end of paragraph — implicit, no statement needed
+}
+
+//================================================================
+// WRITE OUTPUT — placeholder paragraph
+//================================================================
+
+function writeOutput(): void
+{
+    using wss;
+
+    $amtEdited   = $prAmount;               // MOVE WS-PR-AMOUNT TO WS-AMT-EDITED
+    $dateEdited  = $date;                   // MOVE WS-DATE TO WS-DATE-EDITED
+}
+
+
+//================================================================
+// BUILT-IN HELPERS REFERENCE
+// Functions added to PHP/COBOL runtime to cover COBOL verbs
+// that have no direct PHP equivalent:
+//
+//   move_corresponding($src, $dst)
+//     Copies fields with matching names from $src to $dst.
+//     Equivalent to MOVE CORRESPONDING.
+//
+//   add_corresponding($src, $dst)
+//     Adds numeric fields with matching names from $src into $dst.
+//     Equivalent to ADD CORRESPONDING.
+//
+//   search_all($table, $keyField, $value) : int|null
+//     Binary search on a table declared with ordered_by.
+//     Returns 1-based index of matching entry, or null (AT END).
+//     Equivalent to SEARCH ALL.
+//
+// Everything else maps to native PHP:
+//   str_replace / strtr   INSPECT REPLACING / CONVERTING
+//   substr_count          INSPECT TALLYING
+//   explode               UNSTRING DELIMITED
+//   preg_split            UNSTRING with multiple delimiters
+//   intdiv / %            DIVIDE ... REMAINDER
+//   round($x, $scale)     ROUNDED (scale from PIC declaration)
+//   exit                  STOP RUN
+//   return                EXIT PROGRAM
+//================================================================

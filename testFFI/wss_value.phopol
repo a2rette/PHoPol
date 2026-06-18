@@ -1,0 +1,28 @@
+namespace wss {
+
+    // Scalar VALUE clauses — one field per VALUE variant.
+    level(01) $WsScalarVal {
+        string<10>  $alphaHello  = 'HELLO';       // string literal
+        uint<5>     $numCount    = 42;            // positive integer
+        int<5>      $negAmount   = -75;           // negative integer (signed display)
+        uint<5>     $numZero     = ZERO;          // figurative ZERO
+        string<10>  $fillSpaces  = SPACES;        // figurative SPACES (fill)
+        string<3>   $fillHigh    = HIGH_VALUES;   // figurative HIGH_VALUES (fill)
+        string<3>   $fillLow     = LOW_VALUES;    // figurative LOW_VALUES (fill)
+        string<3>   $quoteField  = QUOTE;         // figurative QUOTE
+    }
+
+    // OCCURS group whose sub-field carries a VALUE clause.
+    // Verifies that parseGroupBody forwards initialValue/initialIsFill.
+    level(01) $WsOccurVal {
+        level(05) $slot occurs(4) {
+            string<3>  $code = HIGH_VALUES;       // fill every cell
+        }
+    }
+
+    // Level without any VALUE clauses — all fields stay at space-fill default.
+    level(01) $WsNoVal {
+        string<8>   $alpha;
+        uint<4>     $num;
+    }
+}

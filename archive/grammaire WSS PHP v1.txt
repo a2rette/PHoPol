@@ -1,0 +1,115 @@
+// ============================================================
+// PHP/COBOL  —  WORKING-STORAGE  GRAMMAR  (complete)
+// ============================================================
+
+// TOP-LEVEL DECLARATIONS
+// ----------------------
+[global | external]  record  RecordName  [redefines OtherRecord]  { <fields> }
+[global | external]  standalone  <field_decl>;          // level 77 equivalent
+
+
+// FIELD DECLARATION SYNTAX
+// ------------------------
+<field_decl> :=
+    [redefines($originalField)]
+    <type>
+    [<storage_modifier>]
+    [<alignment_modifier>]
+    [<display_modifier>]
+    $fieldName
+    [index $indexName]          // INDEXED BY — only on array<> fields
+    [depends_on $countField]    // DEPENDING ON — only on variable arrays
+    [ordered_by <key_spec>]     // ASCENDING/DESCENDING KEY — only on arrays
+    [= <initialiser>]           // VALUE clause
+    ;
+
+// Special non-referenceable field:
+    filler  <type>  [= <initialiser>] ;
+
+
+// CONDITION NAMES  (level 88)
+// ---------------------------
+// Inside a record body, bound to the preceding or named field:
+    when $field == <val> [| <val> ...]         : bool $condName ;
+    when $field in  <low>..<high>              : bool $condName ;
+
+// ALIAS  (level 66)
+// -----------------
+// Inside a record body:
+    alias $firstField..$lastField  :  $aliasName ;
+
+
+// TYPES
+// -----
+    string<n>               // PIC X(n)       alphanumeric
+    alpha<n>                // PIC A(n)       alphabetic only
+    uint<n>                 // PIC 9(n)       unsigned zoned decimal
+    int<n>                  // PIC S9(n)      signed zoned decimal
+    decimal<n,m>            // PIC 9(n)V9(m)  unsigned implied decimal
+    sdecimal<n,m>           // PIC S9(n)V9(m) signed implied decimal
+    edited<"mask">          // PIC <edited>   display-only masked field
+    float32                 // USAGE COMP-1   single-precision float
+    float64                 // USAGE COMP-2   double-precision float
+    pointer                 // USAGE POINTER
+    procedure_pointer       // USAGE PROCEDURE-POINTER
+    array<type, n>          // OCCURS n TIMES  (fixed)
+    array<type, min..max>   // OCCURS min TO max TIMES  (variable, needs depends_on)
+    struct { <fields> }     // anonymous group (inline sub-record under OCCURS)
+
+
+// STORAGE MODIFIERS  (USAGE)
+// --------------------------
+    binary                  // USAGE BINARY / COMP   two's-complement
+    comp                    // synonym for binary
+    packed                  // USAGE COMP-3          packed decimal (BCD)
+    native                  // USAGE COMP-5          machine-native binary
+
+
+// ALIGNMENT MODIFIER
+// ------------------
+    sync                    // SYNCHRONIZED LEFT  (default)
+    sync(left)              // SYNCHRONIZED LEFT  (explicit)
+    sync(right)             // SYNCHRONIZED RIGHT
+
+
+// DISPLAY MODIFIERS
+// -----------------
+    justify(right)          // JUSTIFIED RIGHT
+    justify(left)           // default, rarely written
+    blank_zero              // BLANK WHEN ZERO  (edited<> only)
+
+
+// KEY SPEC  (ordered_by)
+// ----------------------
+    asc($field)             // ASCENDING KEY IS field
+    desc($field)            // DESCENDING KEY IS field
+    asc($f1), desc($f2)     // multiple keys
+
+
+// INITIALISERS  (VALUE)
+// ---------------------
+    = ZERO | ZEROS          // figurative: numeric zero
+    = SPACES                // figurative: spaces (alphanumeric)
+    = HIGH_VALUES           // figurative: x'FF...'
+    = LOW_VALUES            // figurative: x'00...'
+    = QUOTE                 // figurative: quote character
+    = <numeric literal>     // e.g.  = 3.14159265
+    = '<string literal>'    // e.g.  = 'HELLO'
+
+
+// MODIFIER COMPATIBILITY TABLE
+// ----------------------------
+//
+//  TYPE          binary  comp  packed  native  sync  justify  blank_zero
+//  ----------    ------  ----  ------  ------  ----  -------  ----------
+//  string<n>       ✗      ✗     ✗       ✗      ✗      ✓         ✗
+//  alpha<n>        ✗      ✗     ✗       ✗      ✗      ✓         ✗
+//  uint<n>         ✓      ✓     ✓       ✓      ✓      ✗         ✗
+//  int<n>          ✓      ✓     ✓       ✓      ✓      ✗         ✗
+//  decimal<n,m>    ✗      ✗     ✓       ✗      ✗      ✗         ✗
+//  sdecimal<n,m>   ✗      ✗     ✓       ✗      ✗      ✗         ✗
+//  edited<"..">    ✗      ✗     ✗       ✗      ✗      ✓         ✓
+//  float32         ✗      ✗     ✗       ✗      ✓      ✗         ✗
+//  float64         ✗      ✗     ✗       ✗      ✓      ✗         ✗
+//  array<..>       ✗      ✗     ✗       ✗      ✗      ✗         ✗
+//  pointer         ✗      ✗     ✗       ✗      ✗      ✗         ✗

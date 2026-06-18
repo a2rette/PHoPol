@@ -1,0 +1,933 @@
+HOW phopol.c WORKS — a beginner's guide to PHP extension internals
+===================================================================
+Updated to reflect: layout registry, phopol_register_layout(),
+PHP constants, __construct, real encode/decode handlers.
+
+
+1. WHAT A PHP EXTENSION IS
+---------------------------
+A PHP extension is a Windows DLL (or Linux .so) that PHP loads at startup.
+It can register new functions, new classes, and new constants, all written in C.
+
+PHP finds the extension through php.ini:
+    extension=php_phopol.dll
+
+Or temporarily on the command line:
+    php.exe -d "extension=php_phopol.dll" script.php
+
+Once loaded, the C code runs inside the same process as PHP, at native speed.
+There is no marshalling, no subprocess, no serialisation — just direct memory
+access and function calls.
+
+
+2. THE MODULE ENTRY: announcing ourselves to PHP
+-------------------------------------------------
+At the bottom of phopol.c:
+
+    zend_module_entry phopol_module_entry = {
+        STANDARD_MODULE_HEADER,
+        PHP_PHOPOL_EXTNAME,      // "phopol"
+        phopol_functions,        // global PHP functions we export
+        PHP_MINIT(phopol),       // called once when PHP starts
+        PHP_MSHUTDOWN(phopol),   // called once when PHP stops
+        NULL,                    // RINIT  — per-request startup (unused)
+        NULL,                    // RSHUTDOWN — per-request shutdown (unused)
+        PHP_MINFO(phopol),       // called by phpinfo()
+        PHP_PHOPOL_VERSION,      // "0.1.0"
+        STANDARD_MODULE_PROPERTIES
+    };
+
+This struct is the "identity card" of our extension.  PHP reads it after
+loading the DLL to know what it is called and which hooks to invoke.
+
+STANDARD_MODULE_HEADER expands to a few fixed fields that PHP uses to check
+ABI compatibility (build number, debug mode, ZTS flag, etc.).  That is why
+we need /DZEND_DEBUG=0 in build.bat: PHP checks that our ZEND_DEBUG matches
+its own.
+
+ZEND_GET_MODULE(phopol) — at the very end — exports a C function
+get_module() from the DLL.  That is the single entry point PHP calls after
+LoadLibrary() to obtain the phopol_module_entry pointer.
+COMPILE_DL_PHOPOL guards it so it is only compiled when building a DLL.
+
+
+3. THE MINIT HOOK: everything that runs at startup
+---------------------------------------------------
+PHP_MINIT_FUNCTION(phopol) runs once when PHP loads the extension (before
+any PHP script executes).  It does three things:
+
+  a) Initialise the layout registry (see section 8)
+
+  b) Register PHP constants
+     ----------------------
+     REGISTER_LONG_CONSTANT("PHOPOL_TYPE_DISPLAY", PHOPOL_TYPE_DISPLAY,
+                             CONST_CS | CONST_PERSISTENT);
+
+     REGISTER_LONG_CONSTANT exposes a C integer as a PHP constant.
+     CONST_CS means case-sensitive.
+     CONST_PERSISTENT means the constant survives across requests — required
+     for anything registered in MINIT (which runs once, not per-request).
+
+     We register one constant per FieldType value (DISPLAY, BINARY, PACKED,
+     FLOAT32, FLOAT64, NATIVE) and one per FieldFlag bit (SIGNED, etc.).
+     PHP code can then write  PHOPOL_TYPE_BINARY  instead of a bare integer.
+
+  c) Register the PHoPolLevel01 class
+     ----------------------------------
+     zend_class_entry ce;
+     INIT_CLASS_ENTRY(ce, "PHoPolLevel01", phopol_level01_methods);
+     phopol_level01_ce = zend_register_internal_class(&ce);
+     phopol_level01_ce->create_object = phopol_level01_create_object;
+
+     zend_class_entry is PHP's internal description of a class.
+     INIT_CLASS_ENTRY fills a temporary one (ce) with the name and the
+     method table (phopol_level01_methods).
+     zend_register_internal_class() copies it into permanent memory and
+     returns the pointer we keep as phopol_level01_ce.
+     create_object is replaced so PHP uses our allocator (see section 5).
+
+
+4. THE INTERNAL OBJECT STRUCT: hiding our data inside a PHP object
+-------------------------------------------------------------------
+PHP represents every object as a  zend_object.  We need extra fields
+alongside it (the layout pointer, the byte buffer).  The Zend pattern is
+the "embedded struct":
+
+    typedef struct _phopol_level01_object {
+        phopol_layout_t *layout;   // points to the registered layout
+        uint8_t         *data;     // raw byte buffer
+        size_t           length;   // buffer size in bytes
+        uint8_t          owns_data;// 1 = we allocated data, 0 = borrowed
+        zend_object      std;      // THE PHP OBJECT — must be LAST
+    } phopol_level01_object;
+
+The zend_object MUST be the last field because zend_object itself ends with
+a variable-length array (the property table), which must sit at the very end
+of the containing struct.
+
+PHP hands us a  zend_object*  when it calls our handlers.
+To recover our extra fields we subtract the offset of std:
+
+    static inline phopol_level01_object *phopol_level01_from_obj(zend_object *obj)
+    {
+        return (phopol_level01_object *)((char *)(obj)
+            - XtOffsetOf(phopol_level01_object, std));
+    }
+
+XtOffsetOf is just offsetof() adapted for Zend types.  One pointer
+subtraction gets us back to the start of our struct.
+
+We also tell the handler table where std lives:
+    phopol_level01_handlers.offset = XtOffsetOf(phopol_level01_object, std);
+PHP uses this internally for garbage collection.
+
+
+5. OBJECT LIFECYCLE: create, construct, free
+----------------------------------------------
+  create_object (called by  new PHoPolLevel01(...)):
+      zend_object_alloc() allocates memory for our struct plus the
+      variable-length property table inside std.
+      We set layout=NULL, data=NULL, owns_data=0 (safe defaults).
+      Then zend_object_std_init() and object_properties_init() let PHP
+      initialise its own part of the struct.
+
+  __construct(string $layoutName):
+      PHP calls our PHP_METHOD(PHoPolLevel01, __construct) immediately after
+      create_object.  We look up $layoutName in the global registry
+      (zend_hash_find_ptr) and store the resulting phopol_layout_t* in
+      intern->layout.  If the name is unknown we throw an Error.
+
+  free_object (called when refcount reaches zero):
+      We efree() the byte buffer if owns_data == 1, then call
+      zend_object_std_dtor() so PHP cleans up its own part.
+
+
+6. PHP METHODS: __construct, allocate, attach, rawBytes
+--------------------------------------------------------
+Methods are registered in a  zend_function_entry  array:
+
+    static const zend_function_entry phopol_level01_methods[] = {
+        PHP_ME(PHoPolLevel01, __construct, arginfo___construct, ZEND_ACC_PUBLIC)
+        PHP_ME(PHoPolLevel01, allocate,    arginfo_allocate,    ZEND_ACC_PUBLIC)
+        PHP_ME(PHoPolLevel01, attach,      arginfo_attach,      ZEND_ACC_PUBLIC)
+        PHP_ME(PHoPolLevel01, rawBytes,    arginfo_rawBytes,    ZEND_ACC_PUBLIC)
+        PHP_FE_END
+    };
+
+Each method has an arginfo block that declares its return type and parameter
+types.  PHP uses arginfo for reflection, JIT hints, and type coercion.
+
+Example arginfo for attach():
+    ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_attach, 0, 1, IS_VOID, 0)
+        ZEND_ARG_TYPE_INFO(0, bytes, IS_STRING, 0)
+    ZEND_END_ARG_INFO()
+
+Inside the method body, ZEND_THIS is a macro that gives you the zval* for
+the object the method was called on.  Z_PHOPOL_LEVEL01_P(ZEND_THIS) runs
+phopol_level01_from_obj on it to get our struct.
+
+  allocate() — emalloc a space-filled buffer sized to layout->total_length.
+  attach(string $bytes) — same allocation, then memcpy the input bytes in.
+                          This is one copy (Phase 1 behaviour); a future C
+                          extension will point directly into the PHP string.
+  rawBytes() — RETURN_STRINGL copies the buffer bytes into a PHP string.
+
+
+7. PROPERTY HANDLERS: read and write
+--------------------------------------
+When PHP executes  $rec->programName  it calls:
+    phopol_level01_read_property(obj, "programName", type, cache_slot, rv)
+
+When PHP executes  $rec->programName = 'HELLO'  it calls:
+    phopol_level01_write_property(obj, "programName", &value, cache_slot)
+
+Both handlers:
+  1. Recover intern with phopol_level01_from_obj().
+  2. Try the fast path via cache_slot (see §7.1).
+  3. On a cache miss, call phopol_find_field() — O(1) hash lookup via
+     layout->fields_ht (see §16).  Returns a phopol_field_t*.
+  4. read:  phopol_decode_field() — reads  data + field->offset  bytes and
+            converts them to a PHP zval (ZVAL_STRINGL for Display alpha,
+            ZVAL_LONG for Display numeric / Binary, ZVAL_DOUBLE for Float).
+  5. write: phopol_encode_field() — converts the PHP zval to bytes and
+            writes them at  data + field->offset.
+
+No heap allocation per access.
+
+7.1  How cache_slot works
+--------------------------
+The Zend VM allocates a pair of  void*  slots per property-access opcode
+site.  They are passed to read_property and write_property as  void **cache_slot.
+We use them as follows:
+
+    cache_slot[0] = (void *)phopol_layout_t *   — guard
+    cache_slot[1] = (void *)phopol_field_t *     — tagged pointer
+
+    tag bit 0 of cache_slot[1]:
+        0  →  regular phopol_field_t *     (field read/write)
+        1  →  phopol_condition_t * | 1     (88-level condition name)
+
+    Both phopol_field_t and phopol_condition_t are at least 4-byte aligned,
+    so the low bit of any valid pointer is always 0.
+
+Fast path (read_property):
+
+    if (cache_slot != NULL && cache_slot[0] != NULL
+            && cache_slot[0] == (void *)intern->layout && data != NULL) {
+        void *p = cache_slot[1];
+        if (!((uintptr_t)p & 1))
+            return phopol_decode_field(data, (phopol_field_t *)p, rv);
+        else {
+            cond = (phopol_condition_t *)((uintptr_t)p & ~1);
+            ZVAL_BOOL(rv, phopol_eval_condition(..., cond));
+        }
+    }
+
+On the first access at each opcode site (cache_slot[0] == NULL), the slow
+path runs the linear scan, then writes the result into cache_slot:
+
+    cache_slot[0] = (void *)intern->layout;
+    cache_slot[1] = (void *)field;               // or ((uintptr_t)cond | 1)
+
+On every subsequent iteration of the same loop, both slots are populated
+and cache_slot[0] == intern->layout, so the check passes and the linear
+scan is skipped entirely.
+
+Why we use the layout pointer as guard (not ce):
+    Two PHoPolLevel01 objects with DIFFERENT layouts at the same opcode
+    site would incorrectly share a cache entry if the guard were the class
+    entry (phopol_level01_ce), which is the same for all instances.  Using
+    intern->layout as the guard invalidates the cache whenever a different
+    layout appears at the same site, which is the correct behaviour.
+
+OPcache safety:
+    Cache slots are shared across requests when OPcache is enabled.  The
+    guard value must therefore point to memory that is stable for the
+    process lifetime.  All phopol_layout_t descriptors (top-level and
+    OCCURS sub-layouts) are now persistent (pemalloc).  See section 15.
+
+
+8. THE LAYOUT REGISTRY
+-----------------------
+phopol_register_layout() is a global PHP function (not a method) that
+populates a persistent hash table of layout descriptors.  The PHP bootstrap
+calls it once per level type, before creating any PHoPolLevel01 objects.
+
+  a) The global hash table
+     ----------------------
+     static HashTable *phopol_layouts = NULL;
+
+     Initialised in MINIT:
+         phopol_layouts = pemalloc(sizeof(HashTable), 1);
+         zend_hash_init(phopol_layouts, 16, NULL, phopol_layout_dtor, 1);
+
+     The  1  flags in pemalloc and zend_hash_init mean "persistent".
+     Persistent memory is allocated from the process heap (like malloc),
+     not from PHP's per-request pool.  It survives across requests and is
+     freed only in MSHUTDOWN.
+
+     Destroyed in MSHUTDOWN:
+         zend_hash_destroy(phopol_layouts);   // calls phopol_layout_dtor
+         pefree(phopol_layouts, 1);           // frees the HashTable itself
+
+  b) Registering a layout (phopol_register_layout)
+     ------------------------------------------------
+     PHP signature:
+         phopol_register_layout(string $name, int $totalLength, array $fields)
+
+     $fields is an array of associative arrays, one per field:
+         ['name'=>'programName', 'offset'=>0, 'length'=>10,
+          'type'=>PHOPOL_TYPE_DISPLAY, 'digits'=>0, 'decimals'=>0, 'flags'=>0]
+
+     The C function:
+       - Skips if the name is already registered ("register once" pattern —
+         subsequent calls are idempotent, safe for per-request bootstrap).
+       - Allocates a persistent phopol_layout_t with pemalloc(..., 1).
+       - Copies the level name with pestrndup(str, len, 1) — persistent
+         strndup.  We CANNOT keep the zend_string* pointer PHP gives us
+         because PHP will free it at the end of the request.
+       - Iterates $fields with ZEND_HASH_FOREACH_VAL, extracts each key
+         with zend_hash_str_find_deref(), and fills a phopol_field_t.
+         Field names are also copied with pestrndup.
+       - Stores the result: zend_hash_add_ptr(phopol_layouts, name, layout).
+
+  c) Looking up a layout (__construct)
+     ------------------------------------
+     phopol_layout_t *layout = zend_hash_find_ptr(phopol_layouts, name);
+
+     Returns the void* stored for that key, or NULL if not found.
+
+  d) Freeing layouts (phopol_layout_dtor)
+     ----------------------------------------
+     The destructor passed to zend_hash_init() is called automatically by
+     zend_hash_destroy() for each entry:
+
+         static void phopol_layout_dtor(zval *zv)
+         {
+             phopol_layout_t *layout = Z_PTR_P(zv);
+             for (i ...) pefree(layout->fields[i].name, 1);
+             pefree(layout->fields, 1);
+             pefree(layout->name, 1);
+             pefree(layout, 1);
+         }
+
+     Z_PTR_P(zv) extracts the raw pointer from the zval.  The hash table
+     stores pointers as IS_PTR zvals internally.
+
+
+9. MEMORY: emalloc vs pemalloc
+-------------------------------
+PHP has two allocator families:
+
+  emalloc(size) / efree(ptr) / estrdup / estrndup
+      Request-scoped.  Freed automatically at the end of each request.
+      Use for anything that only needs to live during one script execution
+      (object buffers, decoded field values, etc.).
+
+  pemalloc(size, 1) / pefree(ptr, 1) / pestrndup(str, len, 1)
+      Persistent.  Allocated from the process heap; survives across requests.
+      The  1  is a "persistent" flag (0 = request-scoped, same as emalloc).
+      Use for data registered in MINIT or that must outlive a single request
+      (layout descriptors, the hash table itself, field name strings).
+
+NEVER mix them: do not efree() something allocated with pemalloc or vice
+versa, or you will corrupt the heap.
+
+Rule of thumb for PHoPol:
+  - Layout registry contents        → pemalloc (persistent, registered once)
+  - PHoPolLevel01 byte buffers      → emalloc  (per object, freed in free_obj)
+  - Temporary decode strings (zval) → emalloc  (freed by Zend GC)
+
+
+10. THE ZEND HASHTABLE API
+---------------------------
+Zend's HashTable is an ordered hash map, the same structure that backs PHP
+arrays.  Key API functions used in phopol.c:
+
+  zend_hash_init(ht, nSize, NULL, dtor, persistent)
+      Initialise a HashTable.  nSize is the initial bucket count (hint).
+      dtor is called on each value when the entry is deleted or the table
+      is destroyed.  persistent mirrors the pemalloc flag.
+
+  zend_hash_add_ptr(ht, zend_string *key, void *ptr)
+      Insert a pointer under a string key.  Stored internally as a zval
+      with type IS_PTR.  Returns NULL if the key already exists.
+
+  zend_hash_find_ptr(ht, zend_string *key)
+      Retrieve the pointer for a key.  Returns NULL if not found.
+
+  zend_hash_str_find_deref(ht, char *key, size_t len)
+      Find by C string key and follow references (ZVAL_DEREF) if the value
+      is a PHP reference.  Used to extract fields from a PHP array safely.
+
+  zend_hash_num_elements(ht)
+      Number of entries currently in the table.
+
+  ZEND_HASH_FOREACH_VAL(ht, zval *val) { ... } ZEND_HASH_FOREACH_END()
+      Iterate every value in insertion order.  val points to each zval in
+      turn.  Call ZVAL_DEREF(val) inside if entries might be references.
+
+  zend_hash_destroy(ht)
+      Delete all entries (calling the dtor for each) and release internal
+      buckets.  Does NOT free the HashTable struct itself — caller does that.
+
+
+11. PHP_FUNCTION: registering a global PHP function
+----------------------------------------------------
+PHP_METHOD is for class methods.  PHP_FUNCTION is for plain global functions
+like  phopol_register_layout().
+
+Declare:
+    PHP_FUNCTION(phopol_register_layout);
+
+Define:
+    PHP_FUNCTION(phopol_register_layout)
+    {
+        zend_string *name;
+        zend_long    total_length;
+        HashTable   *fields_ht;
+
+        ZEND_PARSE_PARAMETERS_START(3, 3)
+            Z_PARAM_STR(name)
+            Z_PARAM_LONG(total_length)
+            Z_PARAM_ARRAY_HT(fields_ht)
+        ZEND_PARSE_PARAMETERS_END();
+
+        /* ... body ... */
+    }
+
+ZEND_PARSE_PARAMETERS_START / _END is the modern (PHP 8) way to parse
+function arguments.  It validates types, coerces where allowed, and throws
+a TypeError automatically if the caller passes the wrong type.
+Z_PARAM_STR extracts a zend_string*, Z_PARAM_LONG a zend_long,
+Z_PARAM_ARRAY_HT a HashTable*.
+
+Register in the module's function table:
+    static const zend_function_entry phopol_functions[] = {
+        PHP_FE(phopol_register_layout, arginfo_register_layout)
+        PHP_FE_END
+    };
+
+This table is passed as the third field of zend_module_entry.
+
+
+12. WHY /DZEND_DEBUG=0 IS IN build.bat
+----------------------------------------
+STANDARD_MODULE_HEADER contains  ZEND_DEBUG  as one of its fields.
+PHP checks at load time that the extension's ZEND_DEBUG matches its own.
+WAMP ships a release build of PHP where ZEND_DEBUG = 0.
+The devel pack headers do not define ZEND_DEBUG (the official build system
+sets it via a generated config file we do not have).
+We define it explicitly on the compiler command line: /DZEND_DEBUG=0.
+
+
+13. BUILD FLAGS SUMMARY
+------------------------
+/LD                 compile and link as a DLL
+/MD                 link against the multithreaded DLL runtime (UCRT)
+/O2                 optimise for speed
+/DPHP_WIN32         tell PHP headers we are on Windows
+/DZEND_WIN32        same for Zend headers
+/DZTS               thread-safe build (matches WAMP's php8ts.dll)
+/DCOMPILE_DL_PHOPOL enables the ZEND_GET_MODULE(phopol) export
+/DZEND_ENABLE_STATIC_TSRMLS_CACHE=1
+                    fast TLS cache for the TSRM thread-local storage pointer
+                    (standard for ZTS extensions)
+/DZEND_DEBUG=0      release build, matches WAMP's PHP
+/I ...              include paths for PHP and Zend headers
+/NODEFAULTLIB:LIBCMT
+                    prevents linking the static MSVCRT alongside the DLL
+                    version (they would conflict)
+
+
+14. HOW OCCURS TABLES WORK INTERNALLY
+---------------------------------------
+
+This section traces the full path from a `.phopol` OCCURS declaration all the
+way down to the byte that gets read or written when PHP executes:
+
+    $WsCalendar->month[3]->monthName = 'March';
+
+
+14.1  What the parser stores
+----------------------------
+The PHP parser (PHoPolParser) does not create one field descriptor per cell.
+It creates ONE descriptor per sub-field, shared by all cells, and uses a
+composite key to record that it belongs to an OCCURS group:
+
+    key in the layout field map:  "month[*]_monthName"
+    key for another sub-field:    "month[*]_monthDays"
+    key for another:              "month[*]_monthTotal"
+
+The [*] notation means "any index".  The field descriptor (phopol_field_t)
+stores:
+
+    offset       — byte distance from the START OF CELL ZERO (i.e. the first
+                   byte of the first cell, not the start of the record)
+    occurs_max   — 12  (the "occurs(12)" from the declaration)
+    entry_size   — 17  (total bytes per cell: sum of all sub-field lengths)
+
+The parent layout also records the OCCURS group as a regular field whose
+offset is the byte position of the group within the record.  That field is
+what lets us compute group_base (see 14.3).
+
+All other (non-OCCURS) fields have occurs_max == 1 and entry_size == 0.
+
+
+14.2  Why a proxy object is needed
+------------------------------------
+The PHP expression $WsCalendar->month[3]->monthName involves two operators:
+    ->month       property access on a PHoPolLevel01 object
+    [3]           array-dimension access
+    ->monthName   property access on the result of [3]
+
+A PHoPolLevel01 object cannot directly implement [idx], because that would
+make the whole level object array-accessible.  Instead, ->month must return
+an intermediate object that implements array access and knows which group is
+being accessed.  That intermediate object is PHoPolOccursGroup (the "proxy").
+
+
+14.3  The PHoPolOccursGroup proxy
+-----------------------------------
+struct _phopol_occurs_group_object (php_phopol.h):
+
+    parent_zval   — holds a reference to the PHoPolLevel01 that owns the data
+    group_name    — "month" (estrndup'd)
+    occurs_max    — 12  (for bounds checking in [idx])
+    sub_layout    — pointer to a precomputed sub-layout (see 14.4)
+    group_base    — byte offset of the OCCURS group within the record
+    entry_size    — 17  (bytes per cell)
+
+The proxy is created on the first ->month access.  Once created it is stored
+in the parent's standard properties hash table under the key "month".  On all
+subsequent ->month accesses the engine calls get_property_ptr_ptr, which does
+an O(1) hash lookup and returns the cached proxy directly.
+
+
+14.4  The sub-layout and persistent occurs info
+-----------------------------------------------
+A sub-layout is a phopol_layout_t whose fields[] array contains only the
+sub-fields of the OCCURS group.  It is built by phopol_get_occurs_info:
+
+    1. Compute a cache key: sprintf("%p:%s", parent_layout, group_name).
+    2. If phopol_sublayout_cache already has an entry for this key, return it
+       immediately (O(1)).
+    3. Otherwise, scan the parent layout's fields[] looking for entries whose
+       name starts with "month[*]_".
+    4. For each match, create a persistent phopol_field_t in the sub-layout:
+         name    = pestrndup("monthName", ...)   (strip the "month[*]_" prefix)
+         offset  = field's offset within the cell (cell-relative)
+         length, type, digits, decimals, flags, edit_mask — copied verbatim
+         occurs_max = 1, entry_size = 0  (sub-fields are not OCCURS themselves)
+    5. Also record group_base, entry_size, occurs_max, and depending_on.
+    6. Package the five values into a persistent phopol_occurs_info_t and store
+       it in phopol_sublayout_cache.
+
+The sub-layout is PERSISTENT (pemalloc): it lives for the PHP process lifetime
+and is freed in phopol_level_mshutdown() via phopol_sublayout_cache's dtor.
+edit_mask strings are borrowed pointers into the parent layout (also persistent)
+and must NOT be freed by the sub-layout destructor.
+
+ONE sub-layout is built per (parent_layout, group_name) pair for the entire
+process.  Subsequent proxy creations — even in different requests — share the
+same sub-layout.  All [1]..[12] accesses in all requests share the same entry.
+
+
+14.5  Why sub-layout beats scanning the parent layout on every [idx] access
+----------------------------------------------------------------------------
+Alternative: store no sub-layout; on each cell access scan the parent layout
+for fields matching "month[*]_*" and operate directly on them.
+
+The parent layout has N fields total.  The OCCURS sub-layout has K fields
+(K << N in typical COBOL records: most fields are outside the OCCURS group).
+
+Each ->fieldName access inside a cell is an O(N) scan of the parent vs an
+O(K) scan of the sub-layout.  Since K < N the sub-layout is always faster for
+inner-loop accesses.  The one-time O(K) cost to build the sub-layout amortises
+immediately after the first cell access.
+
+
+14.6  The [idx] access: creating a cell sub-view
+--------------------------------------------------
+phopol_occurs_group_read_dimension (called for $proxy[3]):
+
+    1. Bounds check: 1 <= idx <= occurs_max (throws a PHP Error if out of range)
+    2. object_init_ex(rv, phopol_level01_ce)   — create a PHoPolLevel01
+    3. Populate the cell object:
+         sv->layout      = intern->sub_layout    (borrowed — proxy owns it)
+         sv->owns_layout = 0                     (do NOT free on destruct)
+         sv->data        = NULL                  (no own buffer)
+         sv->owns_data   = 0
+         sv->data_offset = group_base + (idx-1) * entry_size
+         sv->base_zval   = ZVAL_OBJ_COPY(parent) (keep parent alive)
+
+The cell is a thin wrapper.  It holds a reference to its parent and a byte
+offset into the parent's buffer.  Nothing is copied.
+
+
+14.7  The final offset arithmetic
+-----------------------------------
+When a property like ->monthName is read or written on a cell object:
+
+    read_property / write_property look up "monthName" in sv->sub_layout.
+    They find:   field.offset = 0   (monthName is the first sub-field)
+                 field.length = 9
+
+    The actual byte address in memory is:
+
+        parent->data  +  sv->data_offset  +  field.offset
+            |                  |                  |
+            |             group_base          0 (monthName starts at
+            |             + (3-1)*17           the first byte of the cell)
+            |
+          pointer to the uint8_t[] buffer
+
+    For monthDays (at offset 9, length 3):
+        parent->data + (group_base + 2*17) + 9
+
+This is exactly the COBOL model: group_base locates the OCCURS group inside
+the record; (idx-1)*entry_size skips to the right cell; field.offset finds the
+field inside that cell.
+
+
+14.8  The get_property_ptr_ptr hook
+-------------------------------------
+PHP uses two different hooks depending on how a property is accessed:
+
+    read_property          — for $obj->prop  (read chain)
+    get_property_ptr_ptr   — for $obj->prop  (write chain: FETCH_OBJ_W)
+
+FETCH_OBJ_W is triggered by write-side chains like:
+    $WsCalendar->month[3]->monthName = 'March'
+                ↑
+     PHP fetches ->month in write mode to get a zval* it can chain [3] onto.
+
+If get_property_ptr_ptr is not overridden, PHP's default handler creates a
+NULL dynamic property, which (a) triggers "Creation of dynamic property
+deprecated" and (b) returns NULL — crashing the chain.
+
+Our phopol_level01_get_property_ptr_ptr:
+    1. Checks the props hash table for a cached proxy under the group name.
+       If found, returns the cached zval* immediately (O(1)).
+    2. If not cached, calls phopol_make_occurs_proxy() to build it, store it
+       in the hash table, and return the newly inserted zval*.
+    3. Returns NULL for any name that is not an OCCURS group (regular fields,
+       condition names).  PHP then falls through to its default behaviour for
+       those cases.
+
+This means both the read chain and the write chain go through the same proxy
+cache.  The proxy is built at most once regardless of how many times ->month
+appears in the code.
+
+
+14.9  Ownership chain and memory lifetime
+-------------------------------------------
+
+    phopol_sublayout_cache   (persistent HashTable, process lifetime)
+        └── "0x7ff...:month" → phopol_occurs_info_t  (pemalloc)
+                                    └── sub_layout (pemalloc)
+
+    PHoPolLevel01 (parent, request-scoped)
+        └── props HashTable  (zend_std_get_properties)
+                └── "month" → PHoPolOccursGroup (proxy)   [refcount kept by HT]
+                        ├── parent_zval  → (back to parent, +1 refcount)
+                        └── sub_layout   → (borrowed from phopol_sublayout_cache)
+
+    PHoPolLevel01 (cell, returned by [3], request-scoped)
+        ├── layout = proxy->sub_layout   (borrowed from persistent cache, NOT freed)
+        └── base_zval → parent           (+1 refcount, keeps parent alive)
+
+Request-scoped lifecycle:
+
+  - Cell alive  → parent refcount ≥ 1  → proxy stays in parent's HT.
+  - Cell freed  → parent refcount drops; if parent reaches 0, GC runs.
+  - Parent GC   → props HT destroyed → proxy freed.
+  - Proxy freed → phopol_occurs_group_free_object:
+                    efree(group_name)
+                    efree(depending_on)  // request-scoped copy
+                    sub_layout NOT freed (borrowed persistent pointer)
+                    zval_ptr_dtor(&parent_zval)
+
+Process lifetime (persistent):
+
+  - phopol_sublayout_cache entries survive the request and are reused.
+  - phopol_level_mshutdown() (called from PHP_MSHUTDOWN_FUNCTION) calls
+    zend_hash_destroy(phopol_sublayout_cache), which triggers the dtor for
+    each entry: frees the sub-layout's field names (pestrndup'd), the
+    fields array, the sub_layout struct, and the phopol_occurs_info_t.
+
+There is a parent ↔ proxy reference cycle (parent HT holds proxy; proxy holds
+parent).  PHP's cycle garbage collector (GC) handles this correctly because
+both objects are standard zend_objects and participate in GC mark-and-sweep.
+
+
+14.10  Assigning $line = $WsCalendar->month[1]
+-------------------------------------------------
+    $line = $WsCalendar->month[1];
+    $line->monthName = 'January!';
+
+$line is a PHP variable holding a cell PHoPolLevel01 object.  Because PHP
+objects are passed by handle (not by value), $line and the temporary returned
+by ->month[1] refer to the same C struct.  Writing $line->monthName writes
+through sv->base_zval (the parent) at offset sv->data_offset + field.offset,
+which is the same byte as $WsCalendar->month[1]->monthName.
+
+There is NO copy of the cell data.  The cell is a live sub-view of the
+parent's buffer for as long as $line is in scope.
+
+
+14.11  write_dimension and VM write-back
+-----------------------------------------
+After evaluating $WsCalendar->month[3]->monthName = 'March', the PHP VM
+sometimes calls write_dimension on the proxy to "write back" the cell object
+it just used.  This is a PHP VM artefact: the VM cannot always distinguish
+between a real user assignment ($proxy[3] = ...) and a write-back after a
+nested property write.
+
+Our phopol_occurs_group_write_dimension handles this by:
+    - Accepting silently if the value being written is a PHoPolLevel01 object
+      (the write-back case — the data is already in the buffer, nothing to do).
+    - Throwing a PHP Error for any other type (the user tried to assign a
+      scalar or array directly to a cell slot, which is not supported).
+
+
+15. THE PERSISTENT SUB-LAYOUT CACHE (phopol_sublayout_cache)
+=============================================================
+
+15.1  Motivation
+-----------------
+The Zend VM's cache_slot mechanism (§7.1) requires that any pointer stored in
+a cache_slot must remain valid for the process lifetime when OPcache is active,
+because cache_slots live in the opcache oparray and survive across requests.
+
+Sub-layouts for OCCURS cells were previously built with emalloc (request-scoped)
+and freed at the end of each request.  Storing an emalloc'd pointer in a
+cache_slot would cause a use-after-free on request 2.
+
+The fix: build sub-layouts with pemalloc (persistent) and cache them in a
+process-lifetime hash table, so the same layout pointer is valid indefinitely.
+
+15.2  Structure
+----------------
+    static HashTable *phopol_sublayout_cache = NULL;  /* in phopol_level.c */
+
+    typedef struct _phopol_occurs_info {
+        phopol_layout_t *sub_layout;    /* persistent layout for cell sub-views */
+        size_t           group_base;    /* byte offset of group in parent record */
+        size_t           entry_size;    /* bytes per cell                        */
+        uint16_t         occurs_max;    /* physical max cells                    */
+        const char      *depending_on;  /* borrowed from persistent parent field */
+    } phopol_occurs_info_t;
+
+phopol_sublayout_cache maps   string key → phopol_occurs_info_t *
+
+Key format:    sprintf("%p:%s", parent_layout_ptr, group_name)
+               e.g. "0x7ffb3a800040:month"
+
+Using the parent layout pointer (not its name) as part of the key:
+  - Works even for sub-layouts of sub-layouts (nested OCCURS), where the
+    "parent" is itself a sub-layout with name == NULL.
+  - Is collision-free: each unique layout object has a unique address.
+  - Is stable: persistent layout pointers never move.
+
+15.3  Lifecycle
+----------------
+Initialised in phopol_level_minit() (called from PHP_MINIT_FUNCTION):
+    phopol_sublayout_cache = pemalloc(sizeof(HashTable), 1);
+    zend_hash_init(phopol_sublayout_cache, 32, NULL,
+                   phopol_persistent_occurs_info_dtor, 1);
+
+Populated lazily on the first proxy creation for each (parent, group) pair:
+    phopol_occurs_info_t *info = phopol_get_occurs_info(layout, name, len);
+
+Freed in phopol_level_mshutdown() (called from PHP_MSHUTDOWN_FUNCTION,
+before phopol_layouts is destroyed):
+    zend_hash_destroy(phopol_sublayout_cache);  // calls dtor for each entry
+    pefree(phopol_sublayout_cache, 1);
+
+The dtor (phopol_persistent_occurs_info_dtor) frees:
+    - each field's name string (pestrndup'd)
+    - the sub_layout->fields array
+    - the sub_layout struct
+    - the phopol_occurs_info_t struct
+    edit_mask pointers are NOT freed (borrowed from the persistent parent layout).
+
+15.4  Thread-safety note
+-------------------------
+phopol_sublayout_cache is a plain persistent HashTable with no locking.
+Writing to it (inserting a new sub-layout) is not thread-safe if two threads
+build the same sub-layout simultaneously.
+
+This is safe for:
+  - PHP CLI:       single-threaded.
+  - PHP-FPM prefork: multi-process; each worker has its own memory space.
+
+For PHP with ZTS (thread-safe build, e.g. Apache worker/event MPM) a mutex
+would be needed.  PHoPol is primarily targeted at CLI batch use.
+
+15.5  Effect on benchmarks
+---------------------------
+With the cache_slot fast path active (from iteration 2 onward in any loop),
+the per-field-access cost drops from O(K) linear scan to O(1) pointer lookup.
+For a 7-field OCCURS sub-layout accessed 6 times per row over 50 000 rows:
+
+    Before: 2.1 M string comparisons per phase → 46.7 ms (Phase 2, N=50k)
+    After:  6 pointer checks per row            → 41.5 ms  (−11%)
+
+The remaining gap vs. plain PHP arrays is codec overhead: every read/write
+goes through phopol_decode_field/phopol_encode_field (type dispatch, byte
+manipulation) whereas PHP array access is a direct pointer dereference.
+
+
+16. PER-LAYOUT FIELD HASH TABLE (fields_ht)
+============================================
+
+16.1  Motivation
+-----------------
+phopol_find_field() is called from every property access slow path, from
+every condition evaluation (src_field lookup), from DEPENDS ON resolution
+on every cell access, and from MOVE/ADD CORRESPONDING and SEARCH ALL verbs.
+A linear O(K) scan per call is expensive when K is large or the call is hot.
+
+The right fix is to make the lookup intrinsically O(1) everywhere, without
+any per-call key construction or wrapper functions: embed a HashTable in the
+layout itself, keyed by field name, built once at registration time.
+
+16.2  Structure
+----------------
+phopol_layout_t gains one new field (phopol_layout.h):
+
+    HashTable *fields_ht;   /* name → phopol_field_t *;  O(1) lookup */
+
+phopol_find_field() (static inline in phopol_layout.h) becomes:
+
+    static inline phopol_field_t *phopol_find_field(
+        phopol_layout_t *layout, const char *name, size_t name_len)
+    {
+        return (phopol_field_t *)zend_hash_str_find_ptr(
+            layout->fields_ht, name, name_len);
+    }
+
+One zend_hash_str_find_ptr call.  No snprintf, no separate cache table,
+no wrapper function, no per-call overhead beyond the hash lookup itself.
+
+16.3  When it is built
+-----------------------
+Top-level layouts — in phopol_register_layout() (phopol.c), immediately
+after the fields[] array is populated:
+
+    layout->fields_ht = pemalloc(sizeof(HashTable), 1);
+    zend_hash_init(layout->fields_ht, layout->field_count, NULL, NULL, 1);
+    for (fi = 0; fi < layout->field_count; fi++)
+        zend_hash_str_add_ptr(layout->fields_ht,
+            layout->fields[fi].name, strlen(layout->fields[fi].name),
+            &layout->fields[fi]);
+
+OCCURS sub-layouts — in phopol_get_occurs_info() (phopol_level.c), after
+the sub->fields[] array is built:
+
+    sub->fields_ht = pemalloc(sizeof(HashTable), 1);
+    zend_hash_init(sub->fields_ht, sub->field_count, NULL, NULL, 1);
+    for (fi = 0; fi < sub->field_count; fi++)
+        zend_hash_str_add_ptr(sub->fields_ht,
+            sub->fields[fi].name, strlen(sub->fields[fi].name),
+            &sub->fields[fi]);
+
+Both use pemalloc (persistent): the tables are valid for the process lifetime,
+making stored phopol_field_t pointers safe in cache_slots even with OPcache.
+
+16.4  Destruction
+------------------
+Top-level layouts — phopol_layout_dtor() (phopol.c):
+    zend_hash_destroy(layout->fields_ht);
+    pefree(layout->fields_ht, 1);
+    (called before the individual field name pefrees)
+
+Sub-layouts — phopol_persistent_occurs_info_dtor() (phopol_level.c):
+    zend_hash_destroy(sub->fields_ht);
+    pefree(sub->fields_ht, 1);
+    (called before sub->fields individual pefrees)
+
+The dtor is NULL in both cases: the stored phopol_field_t * values are
+borrowed from fields[] (freed separately) — nothing to free per entry.
+
+16.5  Effect
+-------------
+phopol_find_field() is now O(1) everywhere — not just from the second call
+(as a wrapper cache would give), but on the very first call too.  Every
+call site benefits: cache_slot slow paths, DEPENDING ON in phopol_get_logical_max,
+condition src_field in phopol_eval_condition, MOVE/ADD CORRESPONDING inner
+loops, SEARCH ALL key lookup, has_property.
+
+ArrayOp Phase 2 benchmark (N=50k): 41.5 ms → 39.6 ms (−5% additional
+improvement over cache_slot alone).  The main gain from cache_slot stands;
+fields_ht removes the remaining linear-scan cost from all non-cache_slot sites.
+
+
+17. phopol_get_data — STATIC INLINE ITERATIVE
+=============================================
+
+17.1  What it does
+-------------------
+phopol_get_data(intern) follows the base_zval chain to compute the live data
+pointer for any PHoPolLevel01 object:
+
+  - Top-level objects:  no chain  → return intern->data.
+  - REDEFINES overlays: one hop   → return base->data + 0.
+  - OCCURS cells:       one hop   → return base->data + data_offset.
+  - Nested OCCURS:      N hops    → accumulate offsets, return base->data + total.
+
+It is called on every property read and write (after cache_slot resolves the
+field, the data pointer is still needed to compute the byte address).
+
+17.2  Original implementation
+------------------------------
+The original was a recursive non-inline C function in phopol_level.c:
+
+    uint8_t *phopol_get_data(phopol_level01_object *intern)
+    {
+        if (Z_TYPE(intern->base_zval) == IS_OBJECT) {
+            phopol_level01_object *base =
+                phopol_level01_from_obj(Z_OBJ(intern->base_zval));
+            uint8_t *base_data = phopol_get_data(base);   /* recurse */
+            return base_data ? base_data + intern->data_offset : NULL;
+        }
+        return intern->data;
+    }
+
+17.3  New implementation (static inline, iterative)
+----------------------------------------------------
+Moved to php_phopol.h as a static inline:
+
+    static inline uint8_t *phopol_get_data(phopol_level01_object *intern)
+    {
+        size_t offset = 0;
+        while (Z_TYPE(intern->base_zval) == IS_OBJECT) {
+            offset += intern->data_offset;
+            intern = phopol_level01_from_obj(Z_OBJ(intern->base_zval));
+        }
+        return intern->data ? intern->data + offset : NULL;
+    }
+
+Advantages:
+  - static inline: the compiler can inline the call at every call site instead
+    of emitting a real CALL instruction.
+  - Iterative: no stack frame per hop, no possibility of stack overflow for
+    deeply nested chains.
+  - Accumulates the total offset before adding it to data: one addition per hop
+    rather than one add-and-check.
+
+17.4  Measured effect
+---------------------
+No measurable change in ArrayOp Phase 2 benchmarks (N=10k: 7.79→7.94 ms,
+N=50k: 39.62→39.34 ms — both within run-to-run noise).
+
+Reason: for 1-level OCCURS cells, which are the common case in the benchmark,
+the original recursive function required exactly one conditional branch and one
+addition — too simple for the compiler not to inline or optimise already.  The
+codec overhead (phopol_decode_field / phopol_encode_field) dominates so
+completely that a 1-3 ns saving per call is below the noise floor.
+
+The change still makes sense structurally: self-documenting iterative logic,
+visible at every call site in the optimised binary, and correct for any chain
+depth without stack growth.
